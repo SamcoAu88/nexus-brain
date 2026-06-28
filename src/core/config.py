@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     # Security
     PII_MASTER_KEY: str
     JWT_SECRET_KEY: str
+    JWT_ALGORITHM: str = "HS256"
     ENCRYPTION_KEY_VERSION: int = 1
 
     # Rate Limiting

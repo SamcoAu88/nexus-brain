@@ -30,6 +30,7 @@ langgraph
 presidio-analyzer
 presidio-anonymizer
 cryptography
+python-jose[cryptography]
 
 # Caching
 redisVL
