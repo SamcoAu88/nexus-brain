@@ -30,9 +30,9 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Nexus-Brain v5.0 Starting...")
     logger.info(f"Environment: {settings.ENV}")
     logger.info(f"Debug: {settings.DEBUG}")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("🛑 Nexus-Brain Shutting Down...")
 
@@ -47,10 +47,13 @@ app = FastAPI(
 
 # Add rate limiter
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, lambda request, exc: JSONResponse(
-    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-    content={"detail": "Rate limit exceeded"},
-))
+app.add_exception_handler(
+    RateLimitExceeded,
+    lambda request, exc: JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": "Rate limit exceeded"},
+    ),
+)
 
 # CORS middleware
 app.add_middleware(
@@ -82,6 +85,7 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "src.main:app",
         host="0.0.0.0",

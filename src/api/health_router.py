@@ -31,7 +31,7 @@ async def readiness():
                 "database": "ok",
                 "redis": "ok",
                 "llm": "ok",
-            }
+            },
         }
     except Exception as e:
         logger.error(f"Readiness check failed: {e}")

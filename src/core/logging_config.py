@@ -7,10 +7,9 @@ import logging.config
 from pythonjsonlogger import jsonlogger
 
 
-
 def setup_logging():
     """Setup structured logging with JSON output"""
-    
+
     logging_config = {
         "version": 1,
         "disable_existing_loggers": False,
@@ -52,9 +51,10 @@ def setup_logging():
             },
         },
     }
-    
+
     logging.config.dictConfig(logging_config)
-    
+
     # Create logs directory if needed
     import os
+
     os.makedirs("logs", exist_ok=True)

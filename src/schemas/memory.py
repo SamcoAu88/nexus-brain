@@ -5,17 +5,19 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import Optional
 
-
 # ============ Collection Schemas ============
+
 
 class CollectionCreate(BaseModel):
     """Create a new collection"""
+
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = Field(None, max_length=1000)
 
 
 class CollectionResponse(BaseModel):
     """Collection response"""
+
     collection_id: UUID
     user_id: UUID
     name: str
@@ -29,9 +31,13 @@ class CollectionResponse(BaseModel):
 
 # ============ Source Schemas ============
 
+
 class SourceCreate(BaseModel):
     """Create a new source (document, link, etc)"""
-    source_type: str = Field(..., min_length=1, max_length=50)  # 'document', 'link', 'voice'
+
+    source_type: str = Field(
+        ..., min_length=1, max_length=50
+    )  # 'document', 'link', 'voice'
     title: Optional[str] = Field(None, max_length=255)
     url: Optional[str] = Field(None, max_length=2048)
     raw_content: Optional[str] = None
@@ -40,6 +46,7 @@ class SourceCreate(BaseModel):
 
 class SourceResponse(BaseModel):
     """Source response"""
+
     source_id: UUID
     collection_id: UUID
     source_type: str
@@ -54,8 +61,10 @@ class SourceResponse(BaseModel):
 
 # ============ Memory Chunk Schemas ============
 
+
 class MemoryChunkCreate(BaseModel):
     """Create a memory chunk"""
+
     source_id: UUID
     content: str = Field(..., min_length=1)
     chunk_index: int = Field(..., ge=0)
@@ -64,6 +73,7 @@ class MemoryChunkCreate(BaseModel):
 
 class MemoryChunkResponse(BaseModel):
     """Memory chunk response"""
+
     chunk_id: UUID
     source_id: UUID
     content: str
@@ -79,6 +89,7 @@ class MemoryChunkResponse(BaseModel):
 
 class MemoryChunkSearch(BaseModel):
     """Search response for memory chunks"""
+
     chunk_id: UUID
     content: str
     importance: float
@@ -89,13 +100,16 @@ class MemoryChunkSearch(BaseModel):
 
 # ============ Conversation Schemas ============
 
+
 class ConversationCreate(BaseModel):
     """Create a new conversation"""
+
     title: Optional[str] = Field(None, max_length=255)
 
 
 class ConversationResponse(BaseModel):
     """Conversation response"""
+
     conversation_id: UUID
     user_id: UUID
     title: Optional[str]
@@ -109,8 +123,10 @@ class ConversationResponse(BaseModel):
 
 # ============ Message Schemas ============
 
+
 class MessageCreate(BaseModel):
     """Create a message in conversation"""
+
     role: str = Field(..., min_length=1, max_length=20)  # 'user', 'assistant'
     content: str = Field(..., min_length=1)
     tokens_used: Optional[int] = None
@@ -119,6 +135,7 @@ class MessageCreate(BaseModel):
 
 class MessageResponse(BaseModel):
     """Message response"""
+
     message_id: UUID
     conversation_id: UUID
     role: str
