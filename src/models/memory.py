@@ -100,7 +100,9 @@ class MemoryChunk(Base):
     )
     content = Column(Text, nullable=False)
     chunk_index = Column(Integer, nullable=False)  # Position in source
-    embedding = Column(ARRAY(Float), nullable=True)  # 1536 dimensions
+    embedding: list[float] | None = Column(
+        ARRAY(Float), nullable=True
+    )  # 1536 dimensions
     importance = Column(Float, default=0.5, nullable=False)  # 0.0 to 1.0
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

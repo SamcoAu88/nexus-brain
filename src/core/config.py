@@ -106,7 +106,7 @@ class Settings(BaseSettings):
 
 
 # Global settings instance
-settings = Settings()
+settings = Settings(_env_file=".env")
 
 # Validate on import
 try:

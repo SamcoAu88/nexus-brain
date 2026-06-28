@@ -3,6 +3,7 @@ Memory Management Router
 CRUD operations for collections, sources, chunks, conversations, and messages
 """
 
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from uuid import UUID
@@ -47,7 +48,7 @@ def get_db():
 async def create_collection(
     collection: CollectionCreate,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """Create a new collection"""
     if not user_id:
@@ -67,7 +68,7 @@ async def create_collection(
     "/collections", response_model=list[CollectionResponse], tags=["collections"]
 )
 async def list_collections(
-    db: Session = Depends(get_db), user_id: UUID = None  # TODO: From auth
+    db: Session = Depends(get_db), user_id: Optional[UUID] = None  # TODO: From auth
 ):
     """List all collections for user"""
     if not user_id:
@@ -85,7 +86,7 @@ async def list_collections(
 async def get_collection(
     collection_id: UUID,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """Get a specific collection"""
     if not user_id:
@@ -109,7 +110,7 @@ async def get_collection(
 async def delete_collection(
     collection_id: UUID,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """Delete a collection"""
     if not user_id:
@@ -146,7 +147,7 @@ async def create_source(
     collection_id: UUID,
     source: SourceCreate,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """Create a new source in a collection"""
     if not user_id:
@@ -187,7 +188,7 @@ async def create_source(
 async def list_sources(
     collection_id: UUID,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """List all sources in a collection"""
     if not user_id:
@@ -225,7 +226,7 @@ async def create_chunk(
     source_id: UUID,
     chunk: MemoryChunkCreate,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """Create a memory chunk"""
     if not user_id:
@@ -263,7 +264,7 @@ async def create_chunk(
 async def list_chunks(
     source_id: UUID,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """List all chunks for a source"""
     if not user_id:
@@ -300,7 +301,7 @@ async def list_chunks(
 async def create_conversation(
     conversation: ConversationCreate,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """Create a new conversation"""
     if not user_id:
@@ -318,7 +319,7 @@ async def create_conversation(
     "/conversations", response_model=list[ConversationResponse], tags=["conversations"]
 )
 async def list_conversations(
-    db: Session = Depends(get_db), user_id: UUID = None  # TODO: From auth
+    db: Session = Depends(get_db), user_id: Optional[UUID] = None  # TODO: From auth
 ):
     """List all conversations for user"""
     if not user_id:
@@ -341,7 +342,7 @@ async def list_conversations(
 async def get_conversation(
     conversation_id: UUID,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """Get a specific conversation"""
     if not user_id:
@@ -376,7 +377,7 @@ async def create_message(
     conversation_id: UUID,
     message: MessageCreate,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """Add a message to a conversation"""
     if not user_id:
@@ -417,7 +418,7 @@ async def create_message(
 async def list_messages(
     conversation_id: UUID,
     db: Session = Depends(get_db),
-    user_id: UUID = None,  # TODO: From auth
+    user_id: Optional[UUID] = None,  # TODO: From auth
 ):
     """List all messages in a conversation"""
     if not user_id:
