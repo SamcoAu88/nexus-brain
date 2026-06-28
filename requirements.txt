@@ -1,0 +1,72 @@
+# Core Web Framework
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+
+# Database
+sqlalchemy
+psycopg2-binary
+alembic
+supabase
+
+# Vector
+pgvector
+
+# Async & Queue
+celery
+redis
+
+# LLM & AI
+openai
+anthropic
+cohere
+groq
+litellm
+langchain
+langgraph
+
+# Security & PII
+presidio-analyzer
+presidio-anonymizer
+cryptography
+
+# Caching
+redisVL
+
+# Telegram
+pyTelegramBotAPI
+
+# Web & Media
+playwright
+pdfplumber
+markitdown
+requests
+
+# Observability
+langfuse
+sentry-sdk
+opentelemetry-api
+opentelemetry-sdk
+prometheus-client
+
+# Rate Limiting
+slowapi
+
+# Utilities
+python-dotenv
+python-json-logger
+click
+typer
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
+pytest-env
+httpx
+
+# Development
+black
+ruff
+mypy
