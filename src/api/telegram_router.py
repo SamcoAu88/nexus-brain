@@ -6,7 +6,6 @@ Critical: Implements rate limiting, IP whitelist, idempotency
 from fastapi import APIRouter, Request, Header, status
 from fastapi.responses import JSONResponse
 import logging
-import hashlib
 from typing import Optional
 from ipaddress import ip_address, ip_network
 
@@ -49,18 +48,24 @@ def validate_telegram_secret(secret_token: Optional[str]) -> bool:
     return True
 
 
+from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from src.models.memory import TelegramUpdateLog
+from src.core.database import SessionLocal
+
 @router.post("/telegram/webhook", tags=["telegram"])
 async def telegram_webhook(
     request: Request,
     x_telegram_bot_api_secret_token: Optional[str] = Header(None)
 ):
     """
-    Telegram Webhook Handler
+    Telegram Webhook Handler with Database-Backed Idempotency
     
     Security checks:
     1. IP whitelist (Telegram IPs only)
     2. Secret token verification
-    3. Idempotency (prevent duplicate processing)
+    3. Database idempotency (prevent duplicate processing)
     """
     
     # 1. IP Whitelist Check
@@ -92,38 +97,57 @@ async def telegram_webhook(
             content={"error": "Invalid JSON"}
         )
     
-    # 4. Idempotency Check (prevent duplicate processing)
+    # 4. Extract update_id (required for idempotency)
     update_id = update.get("update_id")
-    message_id = update.get("message", {}).get("message_id")
-    chat_id = update.get("message", {}).get("chat", {}).get("id")
-    
-    if not all([update_id, message_id, chat_id]):
-        logger.warning("Missing required fields in update")
+    if not update_id:
+        logger.warning("Missing update_id in webhook")
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "Missing required fields"}
+            content={"error": "Missing update_id"}
         )
     
-    # Create idempotency key: hash(chat_id + message_id)
-    idempotency_key = hashlib.sha256(
-        f"{chat_id}:{message_id}".encode()
-    ).hexdigest()
+    # 5. DATABASE IDEMPOTENCY CHECK
+    db = SessionLocal()
+    try:
+        existing = db.query(TelegramUpdateLog).filter(
+            TelegramUpdateLog.update_id == update_id
+        ).first()
+        
+        if existing:
+            logger.warning(f"Duplicate update: {update_id} (already processed)")
+            return {"ok": True}  # Idempotent - already handled
+        
+        # NEW update - store it immediately (before processing)
+        log_entry = TelegramUpdateLog(
+            update_id=update_id,
+            user_id=None,  # Will extract from message later
+            processed_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + timedelta(hours=24)
+        )
+        db.add(log_entry)
+        db.commit()
+        
+        logger.info(f"✅ Update {update_id} stored for processing")
+        
+    except IntegrityError as e:
+        db.rollback()
+        logger.warning(f"Integrity error (race condition?): {e}")
+        return {"ok": True}  # Still return 200 (idempotent)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Database error: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"error": "Processing error"}
+        )
+    finally:
+        db.close()
     
-    logger.info(f"Processing message: chat={chat_id}, msg={message_id}, idempotency={idempotency_key[:8]}")
-    
-    # TODO: Check if message_id already processed (query DB)
-    # if already_processed(message_id):
-    #     logger.warning(f"Duplicate message: {message_id}")
-    #     return {"ok": True}  # Idempotent response
-    
-    # 5. Enqueue for processing (will be handled by LangGraph agent)
-    # TODO: Send to message queue for async processing
+    # 6. TODO: Enqueue for LangGraph processing
     # from src.tasks.app import process_telegram_message
     # process_telegram_message.delay(update_id, update)
     
-    logger.info(f"✅ Webhook accepted for processing")
-    
-    # Always return 200 OK (Telegram expects this immediately)
+    # Always return 200 OK immediately (Telegram expects this)
     return {"ok": True}
 
 
