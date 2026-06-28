@@ -31,6 +31,7 @@ presidio-analyzer
 presidio-anonymizer
 cryptography
 python-jose[cryptography]
+passlib[argon2]
 
 # Caching
 redisVL

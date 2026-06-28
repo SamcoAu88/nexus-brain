@@ -29,8 +29,9 @@ class UserProfile(Base):
     __tablename__ = "user_profiles"
 
     user_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    telegram_id = Column(String(255), unique=True, nullable=False)
-    username = Column(String(255), nullable=True)
+    telegram_id = Column(String(255), unique=True, nullable=True)
+    username = Column(String(255), unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)

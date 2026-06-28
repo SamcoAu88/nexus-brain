@@ -17,8 +17,54 @@ from src.auth.tokens import (
     refresh_access_token,
 )
 from src.core.config import settings
+from src.core.database import SessionLocal
+from src.models.memory import UserProfile, Collection
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def cleanup_db():
+    """Cleanup database before and after each test"""
+    # Cleanup before
+    db = SessionLocal()
+    db.query(Collection).delete()
+    db.query(UserProfile).delete()
+    db.commit()
+    db.close()
+
+    yield
+
+    # Cleanup after
+    db = SessionLocal()
+    db.query(Collection).delete()
+    db.query(UserProfile).delete()
+    db.commit()
+    db.close()
+
+
+@pytest.fixture
+def db_session():
+    """Create test database session"""
+    db = SessionLocal()
+    yield db
+    # Cleanup
+    db.query(Collection).delete()
+    db.query(UserProfile).delete()
+    db.commit()
+    db.close()
+
+
+@pytest.fixture
+def test_user(db_session):
+    """Create test user with proper password hash"""
+    from src.auth.password import hash_password
+
+    user = UserProfile(username="testuser", password_hash=hash_password("password123"))
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    return user
 
 
 class TestTokenGeneration:
@@ -193,11 +239,61 @@ class TestTokenRefresh:
         assert new_access_token is None
 
 
+class TestSignup:
+    """Test user signup"""
+
+    def test_signup_creates_user(self):
+        """Test signup endpoint creates user"""
+        response = client.post(
+            "/api/auth/signup",
+            json={"username": "newuser", "password": "password123"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["username"] == "newuser"
+        assert "user_id" in data
+        assert data["is_active"] is True
+
+    def test_signup_requires_8_char_password(self):
+        """Test signup requires strong password (8+ chars)"""
+        response = client.post(
+            "/api/auth/signup",
+            json={"username": "user", "password": "short"},
+        )
+
+        assert response.status_code == 422  # Validation error
+
+    def test_signup_duplicate_username_fails(self):
+        """Test signup fails with duplicate username"""
+        # First signup
+        client.post(
+            "/api/auth/signup",
+            json={"username": "alice", "password": "password123"},
+        )
+
+        # Second signup with same username
+        response = client.post(
+            "/api/auth/signup",
+            json={"username": "alice", "password": "otherpass123"},
+        )
+
+        assert response.status_code == 400
+        assert "already taken" in response.json()["detail"]
+
+
 class TestAuthEndpoints:
     """Test authentication endpoints"""
 
     def test_login_endpoint_exists(self):
         """Test login endpoint responds"""
+        # First signup
+        client.post(
+            "/api/auth/signup",
+            json={"username": "testuser", "password": "password123"},
+        )
+
+        # Now login
         response = client.post(
             "/api/auth/login",
             json={"username": "testuser", "password": "password123"},
@@ -211,9 +307,16 @@ class TestAuthEndpoints:
 
     def test_login_returns_valid_tokens(self):
         """Test login returns valid tokens"""
+        # First signup
+        client.post(
+            "/api/auth/signup",
+            json={"username": "tokenuser", "password": "password123"},
+        )
+
+        # Now login
         response = client.post(
             "/api/auth/login",
-            json={"username": "testuser", "password": "password123"},
+            json={"username": "tokenuser", "password": "password123"},
         )
 
         data = response.json()
@@ -233,9 +336,42 @@ class TestAuthEndpoints:
         # Should be same user
         assert access_data.user_id == refresh_data.user_id
 
+    def test_login_invalid_password(self):
+        """Test login fails with wrong password"""
+        # First signup
+        client.post(
+            "/api/auth/signup",
+            json={"username": "secure_user", "password": "correct_password123"},
+        )
+
+        # Try login with wrong password
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "secure_user", "password": "wrong_password"},
+        )
+
+        assert response.status_code == 401
+        assert "Invalid username or password" in response.json()["detail"]
+
+    def test_login_nonexistent_user(self):
+        """Test login fails for nonexistent user"""
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "nonexistent", "password": "password123"},
+        )
+
+        assert response.status_code == 401
+        assert "Invalid username or password" in response.json()["detail"]
+
     def test_refresh_endpoint(self):
         """Test token refresh endpoint"""
-        # First login
+        # First signup
+        client.post(
+            "/api/auth/signup",
+            json={"username": "user1", "password": "password123"},
+        )
+
+        # Then login
         login_response = client.post(
             "/api/auth/login",
             json={"username": "user1", "password": "password123"},
@@ -276,15 +412,18 @@ class TestEndpointProtection:
 
         assert response.status_code == 401  # Unauthorized (no credentials)
 
-    @pytest.mark.skip(
-        reason="Requires user database creation in auth/login endpoint (TODO Sprint 3.1)"
-    )
     def test_collection_create_with_valid_token(self):
         """Test creating collection with valid token"""
-        # Get token
+        # Signup
+        client.post(
+            "/api/auth/signup",
+            json={"username": "coluser", "password": "password123"},
+        )
+
+        # Login
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "user", "password": "password123"},
+            json={"username": "coluser", "password": "password123"},
         )
         token = login_response.json()["access_token"]
 
@@ -305,15 +444,18 @@ class TestEndpointProtection:
 
         assert response.status_code == 401
 
-    @pytest.mark.skip(
-        reason="Requires user database creation in auth/login endpoint (TODO Sprint 3.1)"
-    )
     def test_list_collections_with_valid_token(self):
         """Test listing collections with valid token"""
+        # Signup
+        client.post(
+            "/api/auth/signup",
+            json={"username": "listuser", "password": "password123"},
+        )
+
         # Login
         login_response = client.post(
             "/api/auth/login",
-            json={"username": "user", "password": "password123"},
+            json={"username": "listuser", "password": "password123"},
         )
         token = login_response.json()["access_token"]
 
@@ -333,3 +475,4 @@ class TestEndpointProtection:
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, list)
+        assert len(data) >= 1

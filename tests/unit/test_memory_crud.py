@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from src.main import app
 from src.core.database import SessionLocal
+from src.auth.password import hash_password
 from src.models.memory import (
     UserProfile,
     Collection,
@@ -40,7 +41,11 @@ def db_session():
 @pytest.fixture
 def test_user(db_session):
     """Create test user"""
-    user = UserProfile(telegram_id="123456789", username="testuser")
+    user = UserProfile(
+        telegram_id="123456789",
+        username="testuser",
+        password_hash=hash_password("password123"),
+    )
     db_session.add(user)
     db_session.commit()
     db_session.refresh(user)

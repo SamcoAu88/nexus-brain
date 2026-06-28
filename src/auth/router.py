@@ -1,29 +1,18 @@
-from uuid import uuid4
-from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
+from src.auth.schemas import LoginRequest, SignupRequest, TokenResponse, UserResponse
+from src.auth.password import hash_password, verify_password
 from src.auth.tokens import (
     create_access_token,
     create_refresh_token,
     refresh_access_token,
 )
+from src.core.database import SessionLocal
+from src.models.memory import UserProfile
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
-
-
-class LoginRequest(BaseModel):
-    """Login request with username and password."""
-
-    username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6)
-
-
-class TokenResponse(BaseModel):
-    """Token response from login/refresh endpoints."""
-
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
 
 
 class RefreshRequest(BaseModel):
@@ -32,22 +21,67 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+def get_db():
+    """Get database session"""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@router.post("/signup", response_model=UserResponse)
+async def signup(
+    request: SignupRequest, db: Session = Depends(get_db)
+) -> UserResponse:
+    """
+    Create a new user account.
+
+    Returns user profile on success, 400 if username already taken.
+    """
+    # Check if username already exists
+    existing_user = db.query(UserProfile).filter_by(username=request.username).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already taken",
+        )
+
+    # Hash password and create user
+    password_hash = hash_password(request.password)
+    user = UserProfile(username=request.username, password_hash=password_hash)
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return UserResponse(
+        user_id=user.user_id,
+        username=user.username,
+        is_active=user.is_active,
+    )
+
+
 @router.post("/login", response_model=TokenResponse)
-async def login(request: LoginRequest) -> TokenResponse:
+async def login(request: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
     """
-    Login endpoint. Currently returns demo tokens.
+    Login with username and password.
 
-    In production, this should:
-    1. Look up user in database by username
-    2. Verify password hash
-    3. Return tokens for that user
+    Returns access and refresh tokens on success, 401 if credentials invalid.
     """
-    # TODO: Implement actual user lookup and password verification
-    # For now, demo: any username/password works, generates unique user_id
-    user_id = uuid4()
+    # Look up user by username
+    user = db.query(UserProfile).filter_by(username=request.username).first()
 
-    access_token = create_access_token(user_id)
-    refresh_token = create_refresh_token(user_id)
+    # Verify user exists and password is correct
+    if not user or not verify_password(request.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+        )
+
+    # Generate tokens
+    access_token = create_access_token(user.user_id)
+    refresh_token = create_refresh_token(user.user_id)
 
     return TokenResponse(
         access_token=access_token,
