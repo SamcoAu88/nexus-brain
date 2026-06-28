@@ -5,7 +5,7 @@ Structured Logging Configuration
 import logging
 import logging.config
 from pythonjsonlogger import jsonlogger
-import sys
+
 
 
 def setup_logging():

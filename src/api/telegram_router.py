@@ -10,6 +10,10 @@ from typing import Optional
 from ipaddress import ip_address, ip_network
 
 from src.core.config import settings
+from datetime import datetime, timedelta
+from sqlalchemy.exc import IntegrityError
+from src.models.memory import TelegramUpdateLog
+from src.core.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +50,6 @@ def validate_telegram_secret(secret_token: Optional[str]) -> bool:
         return False
     
     return True
-
-
-from datetime import datetime, timedelta
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-from src.models.memory import TelegramUpdateLog
-from src.core.database import SessionLocal
 
 @router.post("/telegram/webhook", tags=["telegram"])
 async def telegram_webhook(

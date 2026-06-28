@@ -5,8 +5,7 @@ Unit tests for Telegram webhook idempotency
 import pytest
 from datetime import datetime, timedelta
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.main import app
 from src.core.database import SessionLocal

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from uuid import UUID
 import logging
-
+from typing import List
 from src.core.database import SessionLocal
 from src.models.memory import (
     Collection, Source, MemoryChunk, Conversation, Message, UserProfile

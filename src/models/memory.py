@@ -2,12 +2,12 @@
 SQLAlchemy Models for Memory Management
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from sqlalchemy import BigInteger
 from uuid import uuid4
 from sqlalchemy import (
     Column, String, Text, Integer, Float, DateTime, Boolean,
-    UUID, ForeignKey, JSON, Index, CheckConstraint
+    UUID, ForeignKey, Index, 
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import relationship
