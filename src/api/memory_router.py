@@ -8,7 +8,14 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 import logging
 from src.core.database import SessionLocal
-from src.models.memory import Collection, Source, MemoryChunk, Conversation, Message
+from src.models.memory import (
+    Collection,
+    Source,
+    MemoryChunk,
+    Conversation,
+    Message,
+    PIIRedactionLog,
+)
 from src.schemas.memory import (
     CollectionCreate,
     CollectionResponse,
@@ -21,8 +28,8 @@ from src.schemas.memory import (
     MessageCreate,
     MessageResponse,
 )
-
 from src.auth.dependencies import get_current_user
+from src.security.pii import process_pii
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -344,7 +351,7 @@ async def create_message(
     db: Session = Depends(get_db),
     user_id: UUID = Depends(get_current_user),
 ):
-    """Add a message to a conversation"""
+    """Add a message to a conversation with PII masking"""
     # Verify conversation
     conversation = (
         db.query(Conversation)
@@ -358,16 +365,37 @@ async def create_message(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    # Process PII detection and masking
+    pii_result = process_pii(message.content, mask=True)
+
     db_message = Message(
         conversation_id=conversation_id,
         role=message.role,
         content=message.content,
+        content_masked=pii_result["masked"],
         tokens_used=message.tokens_used,
         model_used=message.model_used,
     )
     db.add(db_message)
     db.commit()
     db.refresh(db_message)
+
+    # Log PII redaction if PII was detected
+    if pii_result["has_pii"]:
+        pii_log = PIIRedactionLog(
+            user_id=user_id,
+            message_id=db_message.message_id,
+            pii_types=pii_result["pii_types"],
+            pii_count=pii_result["pii_count"],
+            sample_entities=pii_result["redacted"][:3],  # Sample of first 3 entities
+        )
+        db.add(pii_log)
+        db.commit()
+        logger.info(
+            f"PII detected in message {db_message.message_id}: "
+            f"{pii_result['pii_count']} entities of types {pii_result['pii_types']}"
+        )
+
     logger.info(f"Created message {db_message.message_id}")
     return db_message
 

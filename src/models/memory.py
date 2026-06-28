@@ -276,6 +276,30 @@ class AuditLog(Base):
     # ← NO TelegramUpdateLog here!
 
 
+class PIIRedactionLog(Base):
+    """Track PII detections and redactions for audit"""
+
+    __tablename__ = "pii_redaction_logs"
+
+    log_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("user_profiles.user_id"), nullable=False
+    )
+    message_id = Column(UUID(as_uuid=True), nullable=True)
+    pii_types = Column(ARRAY(String), nullable=False)  # Types detected: EMAIL, PHONE, etc
+    pii_count = Column(Integer, nullable=False)
+    sample_entities = Column(JSONB, nullable=True)  # Sample of detected entities
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user = relationship("UserProfile")
+
+    __table_args__ = (
+        Index("idx_user_pii_redaction", "user_id"),
+        Index("idx_message_pii", "message_id"),
+    )
+
+
 class TelegramUpdateLog(Base):  # ← Only THIS one, at root level
     """Track processed Telegram updates to prevent duplicates."""
 
