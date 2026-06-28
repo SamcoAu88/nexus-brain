@@ -3,13 +3,10 @@ Unit tests for Memory Router CRUD operations
 Tests collections, sources, chunks, conversations, and messages
 """
 
-from time import time
 
-from openai import conversations
 import pytest
-from uuid import uuid4, UUID
+from uuid import uuid4
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 
 from src.main import app
 from src.core.database import SessionLocal
@@ -111,10 +108,7 @@ class TestCollectionCRUD:
         
         app.dependency_overrides[lambda: None] = get_user_id
         
-        payload = {
-            "name": "My Collection",
-            "description": "Collection for my notes"
-        }
+        
         
         # For now, we need to test via the endpoint directly
         # But since auth isn't implemented, we'll skip this for now
@@ -191,13 +185,13 @@ class TestSourceCRUD:
         
         assert source.source_id is not None
         assert source.source_type == "link"
-        assert source.is_deleted == False
+        assert not source.is_deleted
     
     def test_list_sources_db(self, db_session, test_collection, test_source):
         """Test listing sources in collection"""
         sources = db_session.query(Source).filter(
             Source.collection_id == test_collection.collection_id,
-            Source.is_deleted == False
+            ~Source.is_deleted
         ).all()
         
         assert len(sources) == 1
@@ -221,7 +215,7 @@ class TestSourceCRUD:
         
         sources = db_session.query(Source).filter(
             Source.collection_id == test_collection.collection_id,
-            Source.is_deleted == False
+            ~Source.is_deleted
         ).all()
         
         assert len(sources) == 1
@@ -320,7 +314,7 @@ class TestConversationCRUD:
         db_session.commit()
         
         assert conv.conversation_id is not None
-        assert conv.is_archived == False
+        assert not conv.is_archived
     
     def test_list_conversations_excludes_archived(self, db_session, test_user):
         """Test archived conversations are excluded"""
@@ -335,7 +329,7 @@ class TestConversationCRUD:
         
         conversations = db_session.query(Conversation).filter(
             Conversation.user_id == test_user.user_id,
-            Conversation.is_archived == False
+            ~Conversation.is_archived
         ).all()
         
         assert len(conversations) == 1
@@ -343,7 +337,6 @@ class TestConversationCRUD:
     
     def test_list_conversations_ordered(self, db_session, test_user):
         """Test conversations ordered by most recent"""
-        from datetime import datetime, timedelta
         import time
     
         conv1 = Conversation(user_id=test_user.user_id, title="First")

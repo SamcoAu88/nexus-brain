@@ -3,20 +3,18 @@ Memory Management Router
 CRUD operations for collections, sources, chunks, conversations, and messages
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from uuid import UUID
 import logging
-from typing import List
 from src.core.database import SessionLocal
 from src.models.memory import (
-    Collection, Source, MemoryChunk, Conversation, Message, UserProfile
+    Collection, Source, MemoryChunk, Conversation, Message
 )
 from src.schemas.memory import (
     CollectionCreate, CollectionResponse,
     SourceCreate, SourceResponse,
-    MemoryChunkCreate, MemoryChunkResponse, MemoryChunkSearch,
-    ConversationCreate, ConversationResponse,
+    MemoryChunkCreate, MemoryChunkResponse, ConversationCreate, ConversationResponse,
     MessageCreate, MessageResponse
 )
 
@@ -182,7 +180,7 @@ async def list_sources(
     
     sources = db.query(Source).filter(
         Source.collection_id == collection_id,
-        Source.is_deleted == False
+        ~Source.is_deleted
     ).all()
     return sources
 
@@ -245,7 +243,7 @@ async def list_chunks(
     
     chunks = db.query(MemoryChunk).filter(
         MemoryChunk.source_id == source_id,
-        MemoryChunk.is_deleted == False
+        ~MemoryChunk.is_deleted
     ).order_by(MemoryChunk.chunk_index).all()
     return chunks
 
@@ -286,7 +284,7 @@ async def list_conversations(
     
     conversations = db.query(Conversation).filter(
         Conversation.user_id == user_id,
-        Conversation.is_archived == False
+        ~Conversation.is_archived
     ).order_by(Conversation.updated_at.desc()).all()
     return conversations
 
