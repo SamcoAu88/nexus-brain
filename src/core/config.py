@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     PII_MASTER_KEY: str
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
+    ENCRYPTION_KEY: str  # Fernet key for encrypting secrets
     ENCRYPTION_KEY_VERSION: int = 1
 
     # Rate Limiting
