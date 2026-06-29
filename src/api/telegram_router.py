@@ -140,9 +140,73 @@ async def telegram_webhook(
     finally:
         db.close()
 
-    # 6. TODO: Enqueue for LangGraph processing
-    # from src.tasks.app import process_telegram_message
-    # process_telegram_message.delay(update_id, update)
+    # 6. Extract message text (if available)
+    message = update.get("message", {})
+    text = message.get("text", "")
+    chat_id = message.get("chat", {}).get("id")
+    message_id = message.get("message_id")
+
+    if text and chat_id:
+        try:
+            # Find or create user by telegram_id
+            from src.models.memory import UserProfile
+
+            user = db.query(UserProfile).filter(
+                UserProfile.telegram_id == str(chat_id)
+            ).first()
+
+            if not user:
+                # Create placeholder user for Telegram messages
+                import secrets
+                user = UserProfile(
+                    telegram_id=str(chat_id),
+                    username=f"tg_{chat_id}",
+                    password_hash=secrets.token_hex(32),
+                    is_active=True,
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                logger.info(f"👤 Created Telegram user: {user.user_id}")
+
+            # Find or create conversation for this chat
+            from src.models.memory import Conversation
+            conversation = (
+                db.query(Conversation)
+                .filter(
+                    Conversation.user_id == user.user_id,
+                    Conversation.title == f"Telegram {chat_id}",
+                    Conversation.is_archived == False,
+                )
+                .first()
+            )
+
+            if not conversation:
+                conversation = Conversation(
+                    user_id=user.user_id,
+                    title=f"Telegram {chat_id}",
+                )
+                db.add(conversation)
+                db.commit()
+                db.refresh(conversation)
+
+            # Run the agent in background (don't block the webhook response)
+            import asyncio
+            from src.agents.graph import run_agent
+
+            asyncio.create_task(
+                run_agent(
+                    input=text,
+                    user_id=user.user_id,
+                    conversation_id=conversation.conversation_id,
+                    telegram_update_id=update_id,
+                )
+            )
+
+            logger.info(f"✅ Update {update_id} enqueued for agent processing")
+
+        except Exception as e:
+            logger.error(f"Failed to enqueue agent: {e}")
 
     # Always return 200 OK immediately (Telegram expects this)
     return {"ok": True}

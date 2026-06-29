@@ -13,7 +13,7 @@ from slowapi.errors import RateLimitExceeded
 
 from src.core.config import settings
 from src.core.logging_config import setup_logging
-from src.api import telegram_router, health_router, memory_router
+from src.api import telegram_router, health_router, memory_router, agent_router
 from src.auth import router as auth_router
 
 # Setup logging
@@ -70,6 +70,7 @@ app.include_router(health_router.router, prefix="/api", tags=["health"])
 app.include_router(auth_router.router, prefix="/api", tags=["authentication"])
 app.include_router(telegram_router.router, prefix="/api", tags=["telegram"])
 app.include_router(memory_router.router, prefix="/api", tags=["memory"])
+app.include_router(agent_router.router, prefix="/api", tags=["agent"])
 
 
 # Root endpoint
