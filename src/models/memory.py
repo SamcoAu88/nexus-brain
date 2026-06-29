@@ -17,7 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR as postgresql_tsvector
 from sqlalchemy.orm import relationship
 
 from src.models.base import Base
@@ -100,11 +100,12 @@ class MemoryChunk(Base):
         UUID(as_uuid=True), ForeignKey("sources.source_id"), nullable=False
     )
     content = Column(Text, nullable=False)
-    chunk_index = Column(Integer, nullable=False)  # Position in source
+    chunk_index = Column(Integer, nullable=False)
     embedding: list[float] | None = Column(
         ARRAY(Float), nullable=True
-    )  # 1536 dimensions
-    importance = Column(Float, default=0.5, nullable=False)  # 0.0 to 1.0
+    )
+    search_vector = Column("search_vector", postgresql_tsvector, nullable=True)
+    importance = Column(Float, default=0.5, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_accessed = Column(DateTime, nullable=True)

@@ -24,8 +24,14 @@ def search_memory(
     min_importance: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """
-    Search memory chunks by content similarity (basic keyword fallback until
-    Sprint 5 implements full hybrid search).
+    Search memory chunks using hybrid search (vector + BM25 with RRF fusion).
+
+    Uses hybrid search from Sprint 5 which combines:
+    - pgvector cosine similarity (semantic search)
+    - PostgreSQL full-text search (keyword search)
+    - Reciprocal Rank Fusion for result merging
+
+    Falls back to basic ILIKE search if hybrid search fails.
 
     Args:
         query: Search query text
@@ -36,41 +42,52 @@ def search_memory(
     Returns:
         List of matching chunk dicts
     """
-    db = None
     try:
-        db = SessionLocal()
-        # Keyword-based search via user's sources → chunks
+        from src.search.hybrid_search import search_memory_hybrid
+
+        return search_memory_hybrid(
+            query=query,
+            user_id=user_id,
+            limit=limit,
+            min_importance=min_importance,
+        )
+    except Exception as e:
+        logger.error(f"Hybrid search failed, falling back to ILIKE: {e}")
+        # Fallback to ILIKE
         from src.models.memory import Collection
 
-        results = (
-            db.query(MemoryChunk)
-            .join(Source, MemoryChunk.source_id == Source.source_id)
-            .join(Collection, Source.collection_id == Collection.collection_id)
-            .filter(
-                Collection.user_id == user_id,
-                MemoryChunk.content.ilike(f"%{query}%"),
-                MemoryChunk.importance >= min_importance,
-                MemoryChunk.is_deleted == False,
+        db = None
+        try:
+            db = SessionLocal()
+            results = (
+                db.query(MemoryChunk)
+                .join(Source, MemoryChunk.source_id == Source.source_id)
+                .join(Collection, Source.collection_id == Collection.collection_id)
+                .filter(
+                    Collection.user_id == user_id,
+                    MemoryChunk.content.ilike(f"%{query}%"),
+                    MemoryChunk.importance >= min_importance,
+                    MemoryChunk.is_deleted == False,
+                )
+                .limit(limit)
+                .all()
             )
-            .limit(limit)
-            .all()
-        )
 
-        return [
-            {
-                "chunk_id": str(c.chunk_id),
-                "content": c.content,
-                "importance": c.importance,
-                "created_at": c.created_at.isoformat() if c.created_at else None,
-            }
-            for c in results
-        ]
-    except Exception as e:
-        logger.error(f"Memory search error: {e}")
-        return []
-    finally:
-        if db is not None:
-            db.close()
+            return [
+                {
+                    "chunk_id": str(c.chunk_id),
+                    "content": c.content,
+                    "importance": c.importance,
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                }
+                for c in results
+            ]
+        except Exception as e2:
+            logger.error(f"Fallback search error: {e2}")
+            return []
+        finally:
+            if db is not None:
+                db.close()
 
 
 def get_conversation_history(

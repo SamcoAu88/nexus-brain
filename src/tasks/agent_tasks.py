@@ -91,25 +91,39 @@ def generate_embeddings(
     content: str,
 ):
     """
-    Generate vector embeddings for a memory chunk.
-    Called after new memories are stored.
-
-    TODO: Sprint 5 will wire this to actual embedding models.
-    For now, it's a placeholder that logs the request.
+    Generate vector embeddings for a memory chunk using OpenAI.
+    Called after new memories are stored to enable vector search.
     """
     logger.info(f"🧠 [Celery] Generating embeddings for chunk: {chunk_id}")
-    logger.info(f"  → Content length: {len(content)} chars")
 
-    # TODO: Sprint 5 - Implement actual embedding generation
-    # from src.search.embeddings import generate_embedding
-    # embedding = generate_embedding(content)
-    # store_embedding(chunk_id, embedding)
+    if not content or not content.strip():
+        logger.warning(f"Empty content for chunk {chunk_id}, skipping")
+        return {"status": "skipped", "reason": "empty content"}
 
-    return {
-        "status": "pending",
-        "chunk_id": chunk_id,
-        "note": "Embedding generation will be implemented in Sprint 5",
-    }
+    try:
+        from src.search.embeddings import generate_embedding
+        from src.search.vector_search import store_embedding
+        from uuid import UUID
+
+        embedding = generate_embedding(content)
+        if embedding is None:
+            raise RuntimeError("Embedding generation returned None")
+
+        success = store_embedding(UUID(chunk_id), embedding)
+
+        if success:
+            logger.info(f"✅ Embedding stored for chunk {chunk_id} ({len(embedding)} dims)")
+            return {
+                "status": "success",
+                "chunk_id": chunk_id,
+                "dimensions": len(embedding),
+            }
+        else:
+            raise RuntimeError("Failed to store embedding in database")
+
+    except Exception as e:
+        logger.error(f"❌ Embedding generation failed for {chunk_id}: {e}")
+        raise  # Triggers Celery retry
 
 
 @celery_app.task(name="cleanup_expired", **TASK_DEFAULT_KWARGS)
