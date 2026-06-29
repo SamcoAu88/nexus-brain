@@ -13,7 +13,7 @@ from slowapi.errors import RateLimitExceeded
 
 from src.core.config import settings
 from src.core.logging_config import setup_logging
-from src.api import telegram_router, health_router, memory_router, agent_router
+from src.api import telegram_router, health_router, memory_router, agent_router, metrics_router
 from src.auth import router as auth_router
 
 # Setup logging
@@ -27,15 +27,40 @@ limiter = Limiter(key_func=get_remote_address)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle management"""
-    # Startup
-    logger.info("🚀 Nexus-Brain v5.0 Starting...")
+    import time as _time
+    start = _time.time()
+
+    logger.info("--- Nexus-Brain v5.0 Starting ---")
     logger.info(f"Environment: {settings.ENV}")
     logger.info(f"Debug: {settings.DEBUG}")
+    logger.info(f"Database: {settings.DATABASE_URL[:50]}...")
+    logger.info(f"Redis: {settings.REDIS_URL}")
+
+    # Verify DB
+    try:
+        from src.core.database import SessionLocal
+        db = SessionLocal()
+        db.execute("SELECT 1")
+        db.close()
+        logger.info("database: ok")
+    except Exception as e:
+        logger.warning(f"database: unavailable ({e})")
+
+    # Verify Redis
+    try:
+        import redis as redis_lib
+        client = redis_lib.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        client.ping()
+        client.close()
+        logger.info("redis: ok")
+    except Exception as e:
+        logger.warning(f"redis: unavailable ({e})")
+
+    logger.info(f"Startup complete ({_time.time() - start:.2f}s)")
 
     yield
 
-    # Shutdown
-    logger.info("🛑 Nexus-Brain Shutting Down...")
+    logger.info("Nexus-Brain Shutting Down...")
 
 
 # Create FastAPI app
@@ -71,6 +96,7 @@ app.include_router(auth_router.router, prefix="/api", tags=["authentication"])
 app.include_router(telegram_router.router, prefix="/api", tags=["telegram"])
 app.include_router(memory_router.router, prefix="/api", tags=["memory"])
 app.include_router(agent_router.router, prefix="/api", tags=["agent"])
+app.include_router(metrics_router.router, prefix="", tags=["monitoring"])
 
 
 # Root endpoint
