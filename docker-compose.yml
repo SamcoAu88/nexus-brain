@@ -1,7 +1,6 @@
 version: '3.9'
 
 services:
-  # PostgreSQL Database
   postgres:
     image: postgres:16-alpine
     container_name: nexus-postgres
@@ -22,7 +21,6 @@ services:
     networks:
       - nexus-network
 
-  # Redis (Cache + Message Broker)
   redis:
     image: redis:7-alpine
     container_name: nexus-redis
@@ -39,7 +37,6 @@ services:
     networks:
       - nexus-network
 
-  # FastAPI Application
   app:
     build:
       context: .
@@ -49,65 +46,44 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/nexus_brain
-      - REDIS_URL=redis://redis:6379/0
-      - ENV=development
-      - DEBUG=True
+      DATABASE_URL: "postgresql://postgres:***@postgres:5432/nexus_brain"
+      REDIS_URL: "redis://redis:***@postgres:5432/nexus_brain"
+      ENV: "development"
+      DEBUG: "True"
+    volumes:
+      - .:/app
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - .:/app
     networks:
       - nexus-network
 
-  # Celery Worker
   celery:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: nexus-celery
-    command: celery -A src.tasks.app worker --loglevel=info -Q capture,embeddings,heavy,default
+    command: celery -A src.tasks.celery_app worker --loglevel=info -Q default,capture,embeddings,heavy
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/nexus_brain
-      - REDIS_URL=redis://redis:6379/0
-      - ENV=development
-    depends_on:
-      - postgres
-      - redis
-      - app
+      DATABASE_URL: "postgresql://postgres:***@postgres:5432/nexus_brain"
+      REDIS_URL: "redis://redis:***@postgres:5432/nexus_brain"
     volumes:
       - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - nexus-network
 
-  # Celery Beat (Scheduler)
-  celery-beat:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: nexus-celery-beat
-    command: celery -A src.tasks.app beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/nexus_brain
-      - REDIS_URL=redis://redis:6379/0
-      - ENV=development
-    depends_on:
-      - postgres
-      - redis
-    volumes:
-      - .:/app
-    networks:
-      - nexus-network
-
-  # Optional: pgAdmin for database inspection
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: nexus-pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@nexus.local
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
       - "5050:80"
@@ -116,12 +92,11 @@ services:
     networks:
       - nexus-network
 
-  # Optional: Redis Commander for Redis inspection
   redis-commander:
     image: rediscommander/redis-commander:latest
     container_name: nexus-redis-commander
     environment:
-      - REDIS_HOSTS=local:redis:6379:0
+      REDIS_HOSTS: "local:redis:6379:0"
     ports:
       - "8081:8081"
     depends_on:

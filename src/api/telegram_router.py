@@ -190,20 +190,17 @@ async def telegram_webhook(
                 db.commit()
                 db.refresh(conversation)
 
-            # Run the agent in background (don't block the webhook response)
-            import asyncio
-            from src.agents.graph import run_agent
+            # Run the agent in background via Celery (async, durable, retriable)
+            from src.tasks.agent_tasks import process_telegram_message
 
-            asyncio.create_task(
-                run_agent(
-                    input=text,
-                    user_id=user.user_id,
-                    conversation_id=conversation.conversation_id,
-                    telegram_update_id=update_id,
-                )
+            process_telegram_message.delay(
+                text=text,
+                user_id=str(user.user_id),
+                conversation_id=str(conversation.conversation_id),
+                telegram_update_id=update_id,
             )
 
-            logger.info(f"✅ Update {update_id} enqueued for agent processing")
+            logger.info(f"✅ Update {update_id} enqueued to Celery for agent processing")
 
         except Exception as e:
             logger.error(f"Failed to enqueue agent: {e}")
