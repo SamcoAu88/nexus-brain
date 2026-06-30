@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 from copy import deepcopy
+from datetime import datetime
 
 from src.agents.state import AgentState
 from src.agents.tools import (
@@ -29,6 +30,10 @@ from src.agents.tools import (
 from src.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Dynamic current date for system prompts
+CURRENT_DATE = datetime.now().strftime("%B %d, %Y")  # e.g., "June 30, 2026"
+CURRENT_DATE_ISO = datetime.now().strftime("%Y-%m-%d")  # e.g., "2026-06-30"
 
 # ─── LLM Client ─────────────────────────────────────────
 
@@ -180,6 +185,7 @@ Return ONLY a JSON object:
 def memory_retriever(state: AgentState) -> Dict[str, Any]:
     """
     Retrieve relevant memories and conversation history.
+    Handles special cases like "What do you know about me?" by loading all user memories.
     """
     start = time.time()
     input_type = state.get("input_type", "unknown")
@@ -195,32 +201,51 @@ def memory_retriever(state: AgentState) -> Dict[str, Any]:
     memories = []
     memory_query = None
 
+    # Check for "about me" type queries - load ALL user memories
+    about_me_keywords = [
+        "what do you know about me",
+        "what do you remember about me",
+        "tell me what you know about me",
+        "what information do you have about me",
+        "who am i",
+        "what have i told you",
+        "what can you tell me about myself"
+    ]
+
+    is_about_me = any(keyword in input_text.lower() for keyword in about_me_keywords)
+
     # Generate search query for questions and commands
     if input_type in ("question", "command"):
-        query_result = _call_llm(
-            system_prompt=MEMORY_QUERY_PROMPT,
-            user_message=(
-                f"Message type: {input_type}\n"
-                f"Message: {input_text}\n"
-                f"Conversation history: {len(history)} messages"
-            ),
-            temperature=0.0,
-            max_tokens=150,
-        )
+        if is_about_me:
+            # For "about me" queries, search broadly for user's information
+            memory_query = "user profile personal information name location job work"
+            logger.info("  → Detected 'about me' query, loading all user memories")
+        else:
+            query_result = _call_llm(
+                system_prompt=MEMORY_QUERY_PROMPT,
+                user_message=(
+                    f"Message type: {input_type}\n"
+                    f"Message: {input_text}\n"
+                    f"Conversation history: {len(history)} messages"
+                ),
+                temperature=0.0,
+                max_tokens=150,
+            )
 
-        import json
+            import json
 
-        try:
-            parsed = json.loads(query_result["content"])
-            memory_query = parsed.get("query", input_text)
-        except (json.JSONDecodeError, KeyError):
-            memory_query = input_text
+            try:
+                parsed = json.loads(query_result["content"])
+                memory_query = parsed.get("query", input_text)
+            except (json.JSONDecodeError, KeyError):
+                memory_query = input_text
 
-        # Search memories
+        # Search memories - increased limit for "about me" queries
+        limit = 10 if is_about_me else 5
         memories = search_memory(
             query=memory_query,
             user_id=user_id,
-            limit=5,
+            limit=limit,
         )
 
     logger.info(f"  → Retrieved {len(memories)} memories, {len(history)} history messages")
@@ -307,22 +332,30 @@ def entity_extractor(state: AgentState) -> Dict[str, Any]:
 
 # ─── Node 4: Reasoner ──────────────────────────────────
 
-REASONER_SYSTEM_PROMPT = """You are the reasoning engine of Nexus-Brain, a personal AI assistant.
+REASONER_SYSTEM_PROMPT = f"""You are the reasoning engine of Nexus-Brain, a personal AI assistant.
 Your job is to think step by step about how to best respond to the user.
+
+📅 TODAY'S DATE: {CURRENT_DATE} ({CURRENT_DATE_ISO})
 
 Available context:
 - User's message
 - Message classification
-- Relevant memory chunks
+- Relevant memory chunks from user's history
 - Conversation history
-- Known entities
+- Known entities about the user
+- Web search access for current information
+
+MEMORY USAGE:
+- Always reference what you know about the user
+- Personalize responses using stored memories
+- If asked "What do you know about me?", compile all stored information
 
 You have tools available to search for more information or store memories.
-Use them when you need more context or when the user shares important information.
+Use them when you need current information or when the user shares important information.
 
 Think carefully and produce:
 1. Your assessment of what the user needs
-2. Whether you need more information (via tools)
+2. Whether you need web search for current/recent information
 3. What the best response should contain"""
 
 REASONER_USER_TEMPLATE = """Message: {input}
@@ -350,10 +383,24 @@ Instructions:
 
 def reasoner(state: AgentState) -> Dict[str, Any]:
     """
-    Multi-step reasoning with tool access.
+    Multi-step reasoning with tool access and optional web search.
     """
     start = time.time()
     logger.info("🔄 [Node 4] Reasoner")
+
+    # Check if web search is needed for current information
+    from src.tools.search import needs_web_search, web_search
+    user_input = state.get("input", "")
+    web_context = ""
+
+    if needs_web_search(user_input):
+        logger.info("  → Fetching current information via web search...")
+        try:
+            web_context = web_search(user_input)
+            logger.info(f"  → Web context retrieved ({len(web_context)} chars)")
+        except Exception as e:
+            logger.warning(f"Web search failed: {e}")
+            web_context = ""
 
     memories_text = "\n".join(
         f"  [{i+1}] {m.get('content', '')[:300]}..."
@@ -370,6 +417,7 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
         for e in state.get("entities", [])
     ) or "  (no entities extracted)"
 
+    # Build enhanced prompt with web context if available
     user_message = REASONER_USER_TEMPLATE.format(
         input=state.get("pii_masked_input", state["input"]),
         input_type=state.get("input_type", "unknown"),
@@ -381,13 +429,17 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
         pii_types=", ".join(state.get("pii_types", [])),
     )
 
+    # Append web context if available
+    if web_context:
+        user_message = f"{user_message}\n\nCurrent Information from Web:\n{web_context}"
+
     result = _call_llm(
         system_prompt=REASONER_SYSTEM_PROMPT,
         user_message=user_message,
         model=REASONING_MODEL,
         temperature=0.3,
         max_tokens=2048,
-        tools=TOOL_DEFINITIONS,
+        tools=None,  # DeepSeek doesn't support tools, web search is done before LLM call
     )
 
     reasoning = result["content"]
@@ -454,18 +506,21 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
 
 # ─── Node 5: Response Generator ────────────────────────
 
-RESPONSE_PROMPT = """You are Nexus-Brain, a personal AI assistant. Generate a helpful, natural response.
+RESPONSE_PROMPT = f"""You are Nexus-Brain, a personal AI assistant. Generate a helpful, natural response.
+
+📅 Today: {CURRENT_DATE}
 
 Context:
-- Message type: {input_type}
-- User message: {input}
-- Your reasoning: {reasoning}
-- Retrieved memories: {memories}
-- Entities detected: {entities}
+- Message type: {{input_type}}
+- User message: {{input}}
+- Your reasoning: {{reasoning}}
+- Retrieved memories: {{memories}}
+- Entities detected: {{entities}}
 
 Guidelines:
 - Be concise but helpful (1-3 paragraphs max, or less)
-- Reference relevant memories when answering questions
+- Reference relevant memories and personalization when answering
+- Use today's date ({CURRENT_DATE}) if user asks about current time
 - Suggest next steps when appropriate
 - If you need clarification, ask politely
 - NEVER mention internal system details (nodes, state, tools)

@@ -47,6 +47,7 @@ class Settings(BaseSettings):
 
     # External Services
     TAVILY_API_KEY: Optional[str] = None
+    PERPLEXITY_API_KEY: Optional[str] = None  # Web search via Perplexity Sonar
     LANGFUSE_PUBLIC_KEY: Optional[str] = None
     LANGFUSE_SECRET_KEY: Optional[str] = None
     SENTRY_DSN: Optional[str] = None
