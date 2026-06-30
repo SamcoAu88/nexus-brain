@@ -523,7 +523,11 @@ def response_generator(state: AgentState) -> Dict[str, Any]:
         max_tokens=1024,
     )
 
-    response_text = result["content"]
+    response_text = result["content"] or "I understood your message but had trouble generating a response. Could you try asking again?"
+
+    # Safety check: never send empty response
+    if not response_text or response_text.strip() == "":
+        response_text = "I received your message, but I'm having a bit of trouble forming a response right now. Could you rephrase or ask something else?"
 
     # If needs clarification, prefix with a clarification
     if state.get("needs_clarification") and not response_text.startswith("?"):
