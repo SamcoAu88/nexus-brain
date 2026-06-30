@@ -72,6 +72,15 @@ def process_telegram_message(
             f"stored={result.get('memory_stored')}"
         )
 
+        # Send response back to Telegram
+        response_text = result.get("response", "I processed your message but couldn't generate a response.")
+        if response_text and telegram_update_id:
+            try:
+                _send_telegram_response(user_id, response_text)
+                logger.info(f"📤 [Telegram] Response sent for update {telegram_update_id}")
+            except Exception as e:
+                logger.warning(f"Failed to send Telegram response: {e}")
+
         return {
             "status": "success",
             "input_type": result.get("input_type"),
@@ -155,3 +164,41 @@ def cleanup_expired():
     finally:
         if db is not None:
             db.close()
+
+
+# ─── Helper: Send Telegram Response ──────────────────
+
+def _send_telegram_response(user_id: str, response_text: str):
+    """Send agent response back to Telegram user via sendMessage API."""
+    import requests
+    from src.core.config import settings
+
+    db = SessionLocal()
+    try:
+        # Get the user's telegram_id
+        user = db.query(UserProfile).filter(UserProfile.user_id == UUID(user_id)).first()
+        if not user or not user.telegram_id:
+            logger.warning(f"Cannot send response: user {user_id} has no telegram_id")
+            return
+
+        # Send message via Telegram Bot API
+        bot_token = settings.TELEGRAM_BOT_TOKEN
+        chat_id = user.telegram_id
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+
+        payload = {
+            "chat_id": chat_id,
+            "text": response_text,
+            "parse_mode": "HTML",
+        }
+
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+
+        logger.info(f"✅ Telegram message sent to {chat_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to send Telegram response: {e}")
+        raise
+    finally:
+        db.close()
