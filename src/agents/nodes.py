@@ -200,6 +200,7 @@ def memory_retriever(state: AgentState) -> Dict[str, Any]:
 
     memories = []
     memory_query = None
+    query_result = {}  # Initialize to prevent NameError
 
     # Check for "about me" type queries - load ALL user memories
     about_me_keywords = [
@@ -209,50 +210,66 @@ def memory_retriever(state: AgentState) -> Dict[str, Any]:
         "what information do you have about me",
         "who am i",
         "what have i told you",
-        "what can you tell me about myself"
+        "what can you tell me about myself",
+        "what do you know about me so far",  # Added
+        "what else do you know",  # Added
+        "tell me about myself",  # Added
+        "what have you learned about me",  # Added
     ]
 
     is_about_me = any(keyword in input_text.lower() for keyword in about_me_keywords)
 
     # Generate search query for questions and commands
     if input_type in ("question", "command"):
-        if is_about_me:
-            # For "about me" queries, search broadly for user's information
-            memory_query = "user profile personal information name location job work"
-            logger.info("  → Detected 'about me' query, loading all user memories")
-        else:
-            query_result = _call_llm(
-                system_prompt=MEMORY_QUERY_PROMPT,
-                user_message=(
-                    f"Message type: {input_type}\n"
-                    f"Message: {input_text}\n"
-                    f"Conversation history: {len(history)} messages"
-                ),
-                temperature=0.0,
-                max_tokens=150,
-            )
+        try:
+            if is_about_me:
+                # For "about me" queries, search broadly for user's information
+                memory_query = "user profile personal information name location job work"
+                logger.info("  → Detected 'about me' query, loading all user memories")
+            else:
+                query_result = _call_llm(
+                    system_prompt=MEMORY_QUERY_PROMPT,
+                    user_message=(
+                        f"Message type: {input_type}\n"
+                        f"Message: {input_text}\n"
+                        f"Conversation history: {len(history)} messages"
+                    ),
+                    temperature=0.0,
+                    max_tokens=150,
+                )
 
-            import json
+                import json
+
+                try:
+                    parsed = json.loads(query_result["content"])
+                    memory_query = parsed.get("query", input_text)
+                except (json.JSONDecodeError, KeyError, TypeError) as parse_err:
+                    logger.warning(f"Query parsing failed: {parse_err}, using input text")
+                    memory_query = input_text
+
+            # Search memories - increased limit for "about me" queries
+            limit = 10 if is_about_me else 5
 
             try:
-                parsed = json.loads(query_result["content"])
-                memory_query = parsed.get("query", input_text)
-            except (json.JSONDecodeError, KeyError):
-                memory_query = input_text
+                memories = search_memory(
+                    query=memory_query,
+                    user_id=user_id,
+                    limit=limit,
+                )
+            except Exception as search_err:
+                logger.error(f"Memory search failed: {search_err}, continuing with empty memories")
+                memories = []
 
-        # Search memories - increased limit for "about me" queries
-        limit = 10 if is_about_me else 5
-        memories = search_memory(
-            query=memory_query,
-            user_id=user_id,
-            limit=limit,
-        )
+        except Exception as e:
+            logger.error(f"Memory retrieval error: {e}")
+            memories = []
+            query_result = {}
 
     logger.info(f"  → Retrieved {len(memories)} memories, {len(history)} history messages")
     if memory_query:
         logger.info(f"  → Search query: '{memory_query}'")
 
-    tokens = query_result.get("usage", {}) if input_type in ("question", "command") else {}
+    tokens = query_result.get("usage", {}) if query_result else {}
     return {
         "retrieved_memory": memories,
         "conversation_history": history,
@@ -384,6 +401,11 @@ Instructions:
 def reasoner(state: AgentState) -> Dict[str, Any]:
     """
     Multi-step reasoning with tool access and optional web search.
+
+    IMPORTANT: Retrieved memories are NOT masked again because:
+    - They are already from the user's own database
+    - User info (name, location, etc.) is intentionally stored and should be used
+    - Masking them would lose context the user explicitly saved
     """
     start = time.time()
     logger.info("🔄 [Node 4] Reasoner")
@@ -402,20 +424,66 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
             logger.warning(f"Web search failed: {e}")
             web_context = ""
 
-    memories_text = "\n".join(
-        f"  [{i+1}] {m.get('content', '')[:300]}..."
-        for i, m in enumerate(state.get("retrieved_memory", []))
-    ) or "  (no relevant memories found)"
+    # Build memories text with safe extraction (no PII masking on retrieved memories!)
+    # Memories from DB should be used AS-IS to preserve user context
+    memories_list = state.get("retrieved_memory", [])
+    memories_parts = []
 
-    history_text = "\n".join(
-        f"  {m.get('role', '?')}: {m.get('content', '')[:200]}"
-        for m in state.get("conversation_history", [])[-5:]
-    ) or "  (no recent history)"
+    for i, m in enumerate(memories_list):
+        try:
+            # Safely extract content from memory dict/object
+            if isinstance(m, dict):
+                content = m.get("content", "")
+            else:
+                content = str(m)
 
-    entities_text = "\n".join(
-        f"  {e.get('name', '?')} ({e.get('type', '?')})"
-        for e in state.get("entities", [])
-    ) or "  (no entities extracted)"
+            if content:
+                # Truncate but don't mask - this is already stored user info
+                truncated = str(content)[:300]
+                memories_parts.append(f"  [{i+1}] {truncated}...")
+        except Exception as e:
+            logger.warning(f"Failed to extract memory {i}: {e}")
+            continue
+
+    memories_text = "\n".join(memories_parts) or "  (no relevant memories found)"
+
+    # Build conversation history text with safe extraction
+    history_list = state.get("conversation_history", [])[-5:]
+    history_parts = []
+
+    for m in history_list:
+        try:
+            if isinstance(m, dict):
+                role = m.get("role", "?")
+                content = m.get("content", "")
+            else:
+                role = "?"
+                content = str(m)
+
+            if content:
+                truncated = str(content)[:200]
+                history_parts.append(f"  {role}: {truncated}")
+        except Exception as e:
+            logger.warning(f"Failed to extract history message: {e}")
+            continue
+
+    history_text = "\n".join(history_parts) or "  (no recent history)"
+
+    # Build entities text with safe extraction
+    entities_list = state.get("entities", [])
+    entities_parts = []
+
+    for e in entities_list:
+        try:
+            if isinstance(e, dict):
+                name = e.get("name", "?")
+                etype = e.get("type", "?")
+                entities_parts.append(f"  {name} ({etype})")
+        except Exception as err:
+            logger.warning(f"Failed to extract entity: {err}")
+            continue
+
+    entities_text = "\n".join(entities_parts) or "  (no entities extracted)"
 
     # Build enhanced prompt with web context if available
     user_message = REASONER_USER_TEMPLATE.format(
