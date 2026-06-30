@@ -68,7 +68,6 @@ class PerplexitySearchTool:
                 ],
                 "max_tokens": 1024,
                 "temperature": 0.2,  # Low temp for factual results
-                "search_domain_filter": ["perplexity.ai"],
                 "return_related_questions": False,
                 "search_recency_filter": "month",  # Last month for fresher results
             }
