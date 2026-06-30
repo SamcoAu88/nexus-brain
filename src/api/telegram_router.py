@@ -66,13 +66,19 @@ async def telegram_webhook(
     """
 
     # 1. IP Whitelist Check
+    # Note: In development with ngrok, IP validation is skipped
+    # because ngrok relays requests and Telegram IPs won't match
     client_ip = request.client.host if request.client else "unknown"
 
-    if not validate_telegram_ip(client_ip):
-        logger.warning(f"Webhook request from non-Telegram IP: {client_ip}")
-        return JSONResponse(
-            status_code=status.HTTP_403_FORBIDDEN, content={"error": "Unauthorized IP"}
-        )
+    # Skip IP check if FEATURE_GRAPH_RAG is false (development mode)
+    if settings.ENV == "production":
+        if not validate_telegram_ip(client_ip):
+            logger.warning(f"Webhook request from non-Telegram IP: {client_ip}")
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN, content={"error": "Unauthorized IP"}
+            )
+    else:
+        logger.info(f"Development mode: Skipping IP whitelist for ngrok tunnel (IP: {client_ip})")
 
     # 2. Secret Token Verification
     if not validate_telegram_secret(x_telegram_bot_api_secret_token):
