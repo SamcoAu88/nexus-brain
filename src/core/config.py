@@ -35,8 +35,9 @@ class Settings(BaseSettings):
     REDIS_CACHE_DB: int = 1
 
     # LLM Providers
-    OPENAI_API_KEY: str
-    ANTHROPIC_API_KEY: str
+    OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+    DEEPSEEK_API_KEY: str = ""
     COHERE_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
 
@@ -90,13 +91,22 @@ class Settings(BaseSettings):
 
     def validate(self):
         """Validate critical settings on startup"""
+        # At least one LLM provider must be configured
+        has_llm = any([
+            self.OPENAI_API_KEY,
+            self.ANTHROPIC_API_KEY,
+            self.DEEPSEEK_API_KEY,
+        ])
+
+        if not has_llm:
+            raise ValueError(
+                "At least one LLM API key required: "
+                "OPENAI_API_KEY, ANTHROPIC_API_KEY, or DEEPSEEK_API_KEY"
+            )
+
         required = [
             "TELEGRAM_BOT_TOKEN",
-            "DATABASE_URL",
-            "SUPABASE_URL",
-            "SUPABASE_SERVICE_ROLE_KEY",
-            "OPENAI_API_KEY",
-            "PII_MASTER_KEY",
+            "JWT_SECRET_KEY",
         ]
 
         missing = [key for key in required if not getattr(self, key, None)]

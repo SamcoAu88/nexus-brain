@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 # Use litellm for unified access to OpenAI / Anthropic
 from litellm import completion
 
-DEFAULT_MODEL = "gpt-4o-mini"  # Fast & cheap for routing
-REASONING_MODEL = "gpt-4o"  # Slower but smarter for reasoning
+DEFAULT_MODEL = "deepseek/deepseek-chat"  # DeepSeek V4 Flash (fast & cheap)
+REASONING_MODEL = "deepseek/deepseek-chat"  # Same model, DeepSeek is fast enough
 
 
 def _call_llm(

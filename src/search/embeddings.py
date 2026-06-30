@@ -30,6 +30,10 @@ def generate_openai_embedding(
     Returns:
         List of floats, or None on failure
     """
+    if not settings.OPENAI_API_KEY:
+        logger.warning("OPENAI_API_KEY not set, skipping OpenAI embedding")
+        return None
+
     from openai import OpenAI
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -41,7 +45,7 @@ def generate_openai_embedding(
             dimensions=dimensions,
         )
         embedding = response.data[0].embedding
-        logger.debug(f"✅ Generated embedding: {len(embedding)} dimensions")
+        logger.debug(f"OpenAI embedding: {len(embedding)} dimensions")
         return embedding
     except Exception as e:
         logger.error(f"OpenAI embedding failed: {e}")
@@ -75,7 +79,7 @@ def generate_ollama_embedding(
         )
         response.raise_for_status()
         embedding = response.json().get("embedding")
-        logger.debug(f"✅ Ollama embedding: {len(embedding)} dims ({model})")
+        logger.debug(f"Ollama embedding: {len(embedding)} dims ({model})")
         return embedding
     except Exception as e:
         logger.error(f"Ollama embedding failed: {e}")
@@ -91,7 +95,7 @@ def generate_embedding(
 ) -> Optional[List[float]]:
     """
     Generate embedding with automatic fallback.
-    OpenAI → Ollama → None
+    OpenAI -> Ollama -> None
 
     Args:
         text: Text to embed
@@ -133,6 +137,10 @@ def generate_embeddings_batch(
     Returns:
         List of embedding vectors (None for failed items)
     """
+    if not settings.OPENAI_API_KEY:
+        logger.warning("OPENAI_API_KEY not set, skipping batch embedding")
+        return [None] * len(texts)
+
     from openai import OpenAI
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -152,7 +160,6 @@ def generate_embeddings_batch(
                 dimensions=DEFAULT_EMBEDDING_DIMENSIONS,
             )
 
-            # Match embeddings to original order
             emb_map = {e.index: e.embedding for e in response.data}
             results.extend(emb_map.get(j, None) for j in range(len(batch)))
 
