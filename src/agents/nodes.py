@@ -258,8 +258,9 @@ def entity_extractor(state: AgentState) -> Dict[str, Any]:
 
     logger.info("🔄 [Node 3] Entity Extractor")
 
-    # 1. PII detection (using Presidio - already implemented)
-    pii_result = detect_pii(input_text)
+    # 1. PII detection AND masking (using Presidio - already implemented)
+    from src.security.pii import process_pii
+    pii_result = process_pii(input_text, mask=True)
 
     # 2. Entity extraction via LLM (for non-PII entities)
     entities = []
@@ -298,7 +299,7 @@ def entity_extractor(state: AgentState) -> Dict[str, Any]:
         "entities": entities,
         "has_pii": pii_result["has_pii"],
         "pii_types": pii_result["pii_types"],
-        "pii_masked_input": pii_result["masked_text"] if pii_result["has_pii"] else None,
+        "pii_masked_input": pii_result["masked"],  # Correct key from process_pii()
         "tokens_used": state.get("tokens_used", 0) + tokens.get("total_tokens", 0),
         "latency_ms": state.get("latency_ms", 0.0) + (time.time() - start) * 1000,
     }
