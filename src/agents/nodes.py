@@ -60,6 +60,13 @@ def _call_llm(
         "max_tokens": max_tokens,
     }
 
+    # Pass API key explicitly if DeepSeek is used
+    if "deepseek" in model:
+        kwargs["api_key"] = settings.DEEPSEEK_API_KEY
+        kwargs["custom_llm_provider"] = "deepseek"
+        # DeepSeek doesn't support tool calling in OpenAI format
+        tools = None
+
     if tools:
         kwargs["tools"] = tools
 
