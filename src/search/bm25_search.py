@@ -29,13 +29,24 @@ def bm25_search(
 
     Args:
         query: Search keywords
-        user_id: Scope to this user
+        user_id: Scope to this user (must be UUID)
         top_k: Number of results
         min_importance: Minimum importance filter
 
     Returns:
         List of result dicts with chunk_id, content, score, importance
     """
+    # CRITICAL: Ensure user_id is actually a UUID object, not a string
+    if isinstance(user_id, str):
+        logger.warning(f"bm25_search: user_id is string, converting to UUID: {user_id}")
+        try:
+            user_id = UUID(user_id)
+        except ValueError as e:
+            logger.error(f"bm25_search: Failed to convert user_id to UUID: {e}")
+            return []
+
+    logger.debug(f"🔍 bm25_search: query='{query[:30]}...', user_id={user_id}, top_k={top_k}")
+
     db = SessionLocal()
     try:
         # Try tsvector search first (requires migration)
@@ -80,7 +91,7 @@ def _tsvector_search(
         FROM memory_chunks mc
         JOIN sources s ON mc.source_id = s.source_id
         JOIN collections c ON s.collection_id = c.collection_id
-        WHERE c.user_id = :user_id
+        WHERE c.user_id = :user_id::uuid
           AND mc.is_deleted = false
           AND mc.search_vector IS NOT NULL
           AND mc.search_vector @@ to_tsquery('english', :tsquery)
@@ -94,7 +105,7 @@ def _tsvector_search(
         sql,
         {
             "tsquery": tsquery,
-            "user_id": user_id,
+            "user_id": str(user_id),  # Convert UUID to string for PostgreSQL
             "top_k": top_k,
             "min_importance": min_importance,
         },
@@ -135,7 +146,7 @@ def _ilike_search(
     )
 
     params = {f"term{i}": f"%{term}%" for i, term in enumerate(terms[:5])}
-    params["user_id"] = user_id
+    params["user_id"] = str(user_id)  # Convert UUID to string for PostgreSQL
     params["top_k"] = top_k
     params["min_importance"] = min_importance
 
@@ -153,7 +164,7 @@ def _ilike_search(
         FROM memory_chunks mc
         JOIN sources s ON mc.source_id = s.source_id
         JOIN collections c ON s.collection_id = c.collection_id
-        WHERE c.user_id = :user_id
+        WHERE c.user_id = :user_id::uuid
           AND mc.is_deleted = false
           AND mc.importance >= :min_importance
           AND ({conditions})

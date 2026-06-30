@@ -35,22 +35,35 @@ def search_memory(
 
     Args:
         query: Search query text
-        user_id: User to scope results to
+        user_id: User to scope results to (must be UUID)
         limit: Max results to return
         min_importance: Minimum importance threshold (0.0-1.0)
 
     Returns:
         List of matching chunk dicts
     """
+    # CRITICAL: Ensure user_id is actually a UUID object, not a string
+    if isinstance(user_id, str):
+        logger.warning(f"user_id is string, converting to UUID: {user_id}")
+        try:
+            user_id = UUID(user_id)
+        except ValueError as e:
+            logger.error(f"Failed to convert user_id string to UUID: {e}")
+            return []
+
+    logger.debug(f"🔍 search_memory: query='{query[:50]}...', user_id={user_id}, limit={limit}")
+
     try:
         from src.search.hybrid_search import search_memory_hybrid
 
-        return search_memory_hybrid(
+        results = search_memory_hybrid(
             query=query,
             user_id=user_id,
             limit=limit,
             min_importance=min_importance,
         )
+        logger.info(f"  ✓ Found {len(results)} memories for user {user_id}")
+        return results
     except Exception as e:
         logger.error(f"Hybrid search failed, falling back to ILIKE: {e}")
         # Fallback to ILIKE
@@ -150,7 +163,7 @@ def store_memory(
 
     Args:
         content: Text content to store
-        user_id: Owner user
+        user_id: Owner user (must be UUID)
         collection_name: Collection to store under
         source_type: Type of source
         title: Optional title
@@ -160,6 +173,17 @@ def store_memory(
         Source ID if successful, None otherwise
     """
     from src.models.memory import Collection
+
+    # CRITICAL: Ensure user_id is actually a UUID object, not a string
+    if isinstance(user_id, str):
+        logger.warning(f"user_id is string, converting to UUID: {user_id}")
+        try:
+            user_id = UUID(user_id)
+        except ValueError as e:
+            logger.error(f"Failed to convert user_id string to UUID: {e}")
+            return None
+
+    logger.debug(f"💾 store_memory: user_id={user_id}, collection='{collection_name}', content_len={len(content)}")
 
     db = None
     try:

@@ -30,7 +30,7 @@ def vector_search(
 
     Args:
         query: User's search query
-        user_id: Scope to this user
+        user_id: Scope to this user (must be UUID)
         top_k: Number of results to return
         min_importance: Minimum importance filter
         embedding: Pre-computed embedding (will generate if None)
@@ -38,6 +38,15 @@ def vector_search(
     Returns:
         List of result dicts with chunk_id, content, score, importance
     """
+    # CRITICAL: Ensure user_id is actually a UUID object, not a string
+    if isinstance(user_id, str):
+        logger.warning(f"vector_search: user_id is string, converting to UUID: {user_id}")
+        try:
+            user_id = UUID(user_id)
+        except ValueError as e:
+            logger.error(f"vector_search: Failed to convert user_id to UUID: {e}")
+            return []
+
     # Generate embedding if not provided
     if embedding is None:
         embedding = generate_embedding(query)
@@ -48,6 +57,8 @@ def vector_search(
     db = None
     try:
         db = SessionLocal()
+        logger.debug(f"🔍 vector_search: query='{query[:30]}...', user_id={user_id}, top_k={top_k}")
+
         # pgvector cosine similarity via <=> operator
         # The embedding column is stored as vector(1536)
         embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
@@ -63,7 +74,7 @@ def vector_search(
             FROM memory_chunks mc
             JOIN sources s ON mc.source_id = s.source_id
             JOIN collections c ON s.collection_id = c.collection_id
-            WHERE c.user_id = :user_id
+            WHERE c.user_id = :user_id::uuid
               AND mc.is_deleted = false
               AND mc.embedding IS NOT NULL
               AND mc.importance >= :min_importance
@@ -76,7 +87,7 @@ def vector_search(
             sql,
             {
                 "embedding": embedding_str,
-                "user_id": user_id,
+                "user_id": str(user_id),  # Convert UUID to string for PostgreSQL
                 "top_k": top_k,
                 "min_importance": min_importance,
             },
