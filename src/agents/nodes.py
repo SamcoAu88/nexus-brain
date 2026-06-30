@@ -486,8 +486,10 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
     entities_text = "\n".join(entities_parts) or "  (no entities extracted)"
 
     # Build enhanced prompt with web context if available
+    # IMPORTANT: Use ORIGINAL input (not masked) so LLM understands user's actual intent
+    # User names, locations, and context must be visible to reasoning engine
     user_message = REASONER_USER_TEMPLATE.format(
-        input=state.get("pii_masked_input", state["input"]),
+        input=state["input"],
         input_type=state.get("input_type", "unknown"),
         classification_reason="",
         memories=memories_text,
@@ -602,8 +604,12 @@ def response_generator(state: AgentState) -> Dict[str, Any]:
     start = time.time()
     logger.info("🔄 [Node 5] Response Generator")
 
-    # If classified as greeting, short-circuit to a simple response
-    if state.get("input_type") == "greeting":
+    # Check if we have relevant memories retrieved
+    has_memories = bool(state.get("retrieved_memory", []))
+
+    # If classified as greeting AND no memories, short-circuit to simple response
+    # BUT if we have memories (even for greetings), use full context for personalization
+    if state.get("input_type") == "greeting" and not has_memories:
         prompt = f"Respond naturally to this greeting: {state['input']}"
         result = _call_llm(
             system_prompt="You are Nexus-Brain, a friendly personal AI assistant. Keep responses warm and brief.",
@@ -632,7 +638,8 @@ def response_generator(state: AgentState) -> Dict[str, Any]:
     ) or "None"
 
     # Build context for response generation
-    user_input = state.get("pii_masked_input", state.get("input", ""))
+    # Use ORIGINAL input (not masked) so LLM understands user's actual message
+    user_input = state.get("input", "")
     reasoning = state.get("reasoning", "")
     input_type = state.get("input_type", "unknown")
 
