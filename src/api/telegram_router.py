@@ -88,28 +88,26 @@ async def telegram_webhook(
             content={"error": "Invalid secret token"},
         )
 
-    # 3. Parse update
+    # 3. Parse and validate update using Pydantic schema
     try:
-        update = await request.json()
-        logger.info(f"Received Telegram update: {update.get('update_id')}")
+        from src.schemas.telegram import TelegramUpdate
+
+        raw_update = await request.json()
+        update = TelegramUpdate(**raw_update)  # Validate JSON structure
+        logger.info(f"Received Telegram update: {update.update_id}")
     except Exception as e:
-        logger.error(f"Failed to parse webhook body: {e}")
+        logger.error(f"Failed to parse/validate webhook body: {e}")
         return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST, content={"error": "Invalid JSON"}
+            status_code=status.HTTP_400_BAD_REQUEST, content={"error": "Invalid JSON structure"}
         )
 
-    # 4. Extract update_id (required for idempotency)
-    update_id = update.get("update_id")
-    if not update_id:
-        logger.warning("Missing update_id in webhook")
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "Missing update_id"},
-        )
+    # 4. Extract update_id (already guaranteed by Pydantic)
+    update_id = update.update_id
 
     # 5. DATABASE IDEMPOTENCY CHECK
     db = SessionLocal()
     try:
+        # Check for duplicate
         existing = (
             db.query(TelegramUpdateLog)
             .filter(TelegramUpdateLog.update_id == update_id)
@@ -118,39 +116,40 @@ async def telegram_webhook(
 
         if existing:
             logger.warning(f"Duplicate update: {update_id} (already processed)")
-            return {"ok": True}  # Idempotent - already handled
+            db.close()  # Close ONLY if we're returning early
+            return {"ok": True}
 
-        # NEW update - store it immediately (before processing)
+        # NEW update - store it immediately
         log_entry = TelegramUpdateLog(
             update_id=update_id,
-            user_id=None,  # Will extract from message later
+            user_id=None,
             processed_at=datetime.utcnow(),
             expires_at=datetime.utcnow() + timedelta(hours=24),
         )
         db.add(log_entry)
         db.commit()
-
         logger.info(f"✅ Update {update_id} stored for processing")
 
     except IntegrityError as e:
         db.rollback()
         logger.warning(f"Integrity error (race condition?): {e}")
-        return {"ok": True}  # Still return 200 (idempotent)
+        db.close()
+        return {"ok": True}
     except Exception as e:
         db.rollback()
+        db.close()
         logger.error(f"Database error: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"error": "Processing error"},
         )
-    finally:
-        db.close()
+    # NOTE: DON'T CLOSE DB HERE - we still need it below!
 
-    # 6. Extract message text (if available)
-    message = update.get("message", {})
-    text = message.get("text", "")
-    chat_id = message.get("chat", {}).get("id")
-    message_id = message.get("message_id")
+    # 6. Extract message text (now guaranteed to have correct structure)
+    message = update.message
+    text = message.text if message and message.text else ""
+    chat_id = message.chat.id if message and message.chat else None
+    message_id = message.message_id if message else None
 
     if text and chat_id:
         try:
@@ -210,6 +209,15 @@ async def telegram_webhook(
 
         except Exception as e:
             logger.error(f"Failed to enqueue agent: {e}")
+        finally:
+            # Close DB connection only after we're completely done
+            if db:
+                db.close()
+    else:
+        # No message text or chat_id - close DB and return
+        if db:
+            db.close()
+        logger.warning(f"No message text or chat_id in update {update_id}")
 
     # Always return 200 OK immediately (Telegram expects this)
     return {"ok": True}
