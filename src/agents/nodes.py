@@ -507,17 +507,24 @@ def response_generator(state: AgentState) -> Dict[str, Any]:
         for e in state.get("entities", [])
     ) or "None"
 
-    prompt = RESPONSE_PROMPT.format(
-        input_type=state.get("input_type", "unknown"),
-        input=state.get("pii_masked_input", state["input"]),
-        reasoning=state.get("reasoning", ""),
-        memories=memories_text,
-        entities=entities_text,
-    )
+    # Build context for response generation
+    user_input = state.get("pii_masked_input", state.get("input", ""))
+    reasoning = state.get("reasoning", "")
+    input_type = state.get("input_type", "unknown")
+
+    # Create prompt - simpler and clearer
+    user_prompt = f"""Input: {user_input}
+
+Type: {input_type}
+Reasoning: {reasoning if reasoning else "(no additional reasoning)"}
+Relevant memories: {memories_text if memories_text != "None relevant" else "(no relevant memories)"}
+Entities: {entities_text if entities_text != "None" else "(no entities)"}
+
+Please provide a helpful response to the user's input."""
 
     result = _call_llm(
-        system_prompt=prompt,
-        user_message="Generate the response.",
+        system_prompt="You are Nexus-Brain, a helpful personal AI assistant. Be conversational, concise, and helpful. Never mention internal details.",
+        user_message=user_prompt,
         model=REASONING_MODEL,
         temperature=0.5,
         max_tokens=1024,
