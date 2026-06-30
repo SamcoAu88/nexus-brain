@@ -136,7 +136,7 @@ class PIIProcessor:
         self.masker = PIIMasker()
 
     def process(
-        self, text: str, mask: bool = True
+        self, text: str, mask: bool = True, threshold: float = 0.75
     ) -> Dict:
         """
         Process text for PII: detect and optionally mask.
@@ -144,6 +144,8 @@ class PIIProcessor:
         Args:
             text: Text to process
             mask: Whether to mask detected PII
+            threshold: Confidence threshold for detection (default 0.75 = less aggressive)
+                      Avoids false positives on common words like names and places
 
         Returns:
             Dictionary with:
@@ -152,14 +154,41 @@ class PIIProcessor:
             - detected: List of detected entities
             - has_pii: Whether PII was found
         """
-        detected = self.detector.detect(text)
+        # Higher threshold = less aggressive masking
+        # 0.5: very aggressive (original), 0.75: balanced, 0.9: conservative
+        detected = self.detector.detect(text, threshold=threshold)
         has_pii = len(detected) > 0
 
         masked_text = text
         redacted = detected
 
         if mask and has_pii:
-            masked_text, redacted = self.masker.mask(text)
+            # Filter: only mask high-confidence PII
+            # Skip PERSON/LOCATION/ORGANIZATION as they're often user's own info
+            high_confidence_pii = [
+                d for d in detected
+                if d["entity_type"] in [
+                    "EMAIL_ADDRESS",       # Likely real email
+                    "CREDIT_CARD",         # Always PII
+                    "US_SSN",              # Always PII
+                    "PHONE_NUMBER",        # Often real phone
+                    "IBAN",                # Bank account
+                    "IP_ADDRESS",          # Server IP
+                    "US_PASSPORT",         # Document number
+                    "US_DRIVER_LICENSE",   # Document number
+                    "MEDICAL_LICENSE",     # License number
+                ]
+                or d.get("score", 0) > 0.9  # Very high confidence on anything
+            ]
+
+            if high_confidence_pii:
+                # Only mask if genuinely high-confidence sensitive data
+                masked_text, redacted = self.masker.mask(text)
+                # But still report all detected for logging
+                redacted = detected
+            else:
+                # Don't mask borderline cases (names, locations, organizations)
+                masked_text = text
 
         return {
             "original": text,
@@ -188,6 +217,13 @@ def mask_pii(text: str) -> tuple[str, List[Dict]]:
     return masker.mask(text)
 
 
-def process_pii(text: str, mask: bool = True) -> Dict:
-    """Process text for PII - convenience function"""
-    return processor.process(text, mask=mask)
+def process_pii(text: str, mask: bool = True, threshold: float = 0.75) -> Dict:
+    """
+    Process text for PII - convenience function
+
+    Args:
+        text: Text to process
+        mask: Whether to mask detected PII
+        threshold: Confidence threshold (default 0.75 is less aggressive than 0.5)
+    """
+    return processor.process(text, mask=mask, threshold=threshold)
