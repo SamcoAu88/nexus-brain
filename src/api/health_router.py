@@ -88,10 +88,9 @@ async def detailed_health():
 def _check_database() -> dict:
     """Verify PostgreSQL connectivity and migration state."""
     try:
+        from sqlalchemy import text
         db = SessionLocal()
-        db.execute(
-            "SELECT 1 AS ok"
-        )
+        db.execute(text("SELECT 1 AS ok"))
         db.close()
         return {"status": "ok", "latency_ms": 0}
     except Exception as e:
