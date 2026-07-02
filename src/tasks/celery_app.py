@@ -4,6 +4,7 @@ Redis-backed message broker for async task processing.
 """
 
 from celery import Celery
+from celery.schedules import crontab
 from src.core.config import settings
 
 # Celery application instance
@@ -23,7 +24,9 @@ celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
-    timezone="UTC",
+    # Brisbane local time so crontab schedules read naturally;
+    # eta-based tasks use tz-aware datetimes and are unaffected
+    timezone="Australia/Brisbane",
     enable_utc=True,
     # Task result TTL
     result_expires=3600,  # 1 hour
@@ -44,6 +47,19 @@ celery_app.conf.update(
     task_max_retries=3,
     # Visibility
     broker_connection_retry_on_startup=True,
+    # ── Proactive scheduled tasks (Celery Beat) ──
+    beat_schedule={
+        "morning-briefing-7am": {
+            "task": "morning_briefing",
+            "schedule": crontab(hour=7, minute=0),  # 07:00 Australia/Brisbane
+            "options": {"queue": "default"},
+        },
+        "cleanup-expired-logs": {
+            "task": "cleanup_expired",
+            "schedule": crontab(hour=3, minute=30),  # quiet-hours housekeeping
+            "options": {"queue": "default"},
+        },
+    },
 )
 
 # ─── Helper ────────────────────────────────────────────

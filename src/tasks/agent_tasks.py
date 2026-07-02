@@ -29,12 +29,21 @@ TASK_DEFAULT_KWARGS = {
 # ─── Agent Processing Task ─────────────────────────────
 
 
+# Phrases that make the bot answer with VOICE even for a text message
+VOICE_REPLY_PHRASES = [
+    "sesli cevap", "sesli söyle", "sesli soyle", "sesli anlat",
+    "voice reply", "reply with voice", "answer with voice",
+    "voice answer", "tell me with voice", "speak to me",
+]
+
+
 @celery_app.task(name="process_telegram_message", **TASK_DEFAULT_KWARGS)
 def process_telegram_message(
     text: str,
     user_id: str,
     conversation_id: str,
     telegram_update_id: Optional[int] = None,
+    reply_voice: bool = False,
 ):
     """
     Process a Telegram message through the LangGraph agent pipeline.
@@ -121,12 +130,21 @@ def process_telegram_message(
             f"stored={result.get('memory_stored')}"
         )
 
-        # Send response back to Telegram
+        # Send response back to Telegram — as VOICE when the input was a
+        # voice note or the user explicitly asked for a spoken reply
         response_text = result.get("response", "I processed your message but couldn't generate a response.")
+        wants_voice = reply_voice or any(p in text.lower() for p in VOICE_REPLY_PHRASES)
+
         if response_text and telegram_update_id:
             try:
-                _send_telegram_response(user_id, response_text)
-                logger.info(f"📤 [Telegram] Response sent for update {telegram_update_id}")
+                if wants_voice:
+                    sent = _send_telegram_voice(user_id, response_text)
+                    if not sent:
+                        _send_telegram_response(user_id, response_text)  # graceful fallback
+                    logger.info(f"🔊 [Telegram] VOICE response sent for update {telegram_update_id}")
+                else:
+                    _send_telegram_response(user_id, response_text)
+                    logger.info(f"📤 [Telegram] Response sent for update {telegram_update_id}")
             except Exception as e:
                 logger.warning(f"Failed to send Telegram response: {e}")
 
@@ -273,13 +291,15 @@ def process_telegram_voice(
             _send_telegram_response(user_id, "🎤 I couldn't hear anything in that voice note — try again?")
             return {"status": "error", "reason": "empty transcription"}
 
-        # Echo what was heard, then run the normal pipeline
+        # Echo what was heard, then run the normal pipeline with a VOICE reply
+        # (full duplex: you talk to the bot, the bot talks back)
         _send_telegram_response(user_id, f"🎤 <i>I heard:</i> \"{text}\"")
         return process_telegram_message(
             text=text,
             user_id=user_id,
             conversation_id=conversation_id,
             telegram_update_id=telegram_update_id,
+            reply_voice=True,
         )
 
     except Exception as e:
@@ -363,6 +383,145 @@ def process_telegram_photo(
             user_id, "📷 Sorry, I had trouble analyzing that photo. Please try again."
         )
         raise
+
+
+# ─── Voice Reply (OpenAI TTS → Telegram sendVoice) ─────
+
+
+def _send_telegram_voice(user_id: str, text: str) -> bool:
+    """
+    Convert text to speech with OpenAI TTS and deliver as a Telegram voice note.
+    Returns True on success (caller falls back to text on False).
+    """
+    import io
+    import re
+    import requests
+    from openai import OpenAI
+    from src.core.config import settings
+
+    db = SessionLocal()
+    try:
+        user = db.query(UserProfile).filter(UserProfile.user_id == UUID(user_id)).first()
+        if not user or not user.telegram_id:
+            logger.warning(f"Cannot send voice: user {user_id} has no telegram_id")
+            return False
+        chat_id = user.telegram_id
+    finally:
+        db.close()
+
+    try:
+        # Strip HTML/markdown so the voice doesn't read out tags and asterisks
+        speech_text = re.sub(r"<[^>]+>", "", text)
+        speech_text = re.sub(r"[*_`#]+", "", speech_text).strip()
+        speech_text = speech_text[:4000]  # TTS input limit is 4096 chars
+
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        tts = client.audio.speech.create(
+            model="tts-1",
+            voice="onyx",  # warm, clear male voice — good in helmet speakers
+            input=speech_text,
+            response_format="opus",  # Telegram voice notes are OGG/Opus
+        )
+
+        audio = io.BytesIO(tts.content)
+        audio.name = "reply.ogg"
+
+        response = requests.post(
+            f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendVoice",
+            data={"chat_id": chat_id},
+            files={"voice": ("reply.ogg", audio, "audio/ogg")},
+            timeout=30,
+        )
+        response.raise_for_status()
+        logger.info(f"🔊 Voice reply sent to {chat_id} ({len(speech_text)} chars spoken)")
+        return True
+
+    except Exception as e:
+        logger.error(f"Voice reply failed: {e}")
+        return False
+
+
+# ─── Proactive Morning Briefing (Smart Postie Guard) ───
+
+
+@celery_app.task(name="morning_briefing", **TASK_DEFAULT_KWARGS)
+def morning_briefing():
+    """
+    Proactive 07:00 AEST briefing: Boondall weather, Smart Postie Guard
+    rider-safety warnings, and today's calendar. Sent without being asked —
+    this is the 'assistant' part of personal assistant.
+    """
+    from src.tools.weather import get_today_weather, assess_postie_risk
+    from src.tools.calendar import list_upcoming_events, format_events_for_context
+
+    logger.info("🌅 [Celery] Morning briefing starting")
+
+    # ── Gather context ──
+    weather = get_today_weather()
+    risks = assess_postie_risk(weather) if weather else []
+    events = list_upcoming_events(days=1, max_results=5)
+
+    weather_text = (
+        f"{weather['temp_min']:.0f}–{weather['temp_max']:.0f}°C, "
+        f"rain {weather['rain_prob']}%, wind up to {weather['gusts_max']:.0f} km/h gusts, "
+        f"UV {weather['uv_max']:.0f}"
+        if weather
+        else "(weather unavailable)"
+    )
+    risks_text = "\n".join(risks) if risks else "All clear — good riding conditions."
+    calendar_text = format_events_for_context(events)
+
+    # ── Compose with the LLM for a warm, personal tone ──
+    from src.agents.nodes import _call_llm
+
+    try:
+        result = _call_llm(
+            system_prompt=(
+                "You are Nexus-Brain writing a SHORT proactive morning briefing for Samet, "
+                "a motorcycle postie in Boondall, Brisbane. Structure: greeting, one-line "
+                "weather summary, Smart Postie Guard safety warnings (keep the emoji lines "
+                "as given, or say all-clear), today's calendar, one short motivating "
+                "sign-off. Max ~120 words. Plain text with the given emojis, no headers."
+            ),
+            user_message=(
+                f"Weather: {weather_text}\n\n"
+                f"Smart Postie Guard:\n{risks_text}\n\n"
+                f"Today's calendar:\n{calendar_text}"
+            ),
+            temperature=0.6,
+            max_tokens=400,
+        )
+        briefing = result["content"].strip()
+    except Exception as e:
+        logger.warning(f"LLM composition failed, using template: {e}")
+        briefing = (
+            f"Good morning Samet! ☀️\n\n🌤 Today in Boondall: {weather_text}\n\n"
+            f"🛡 Smart Postie Guard:\n{risks_text}\n\n📅 Calendar:\n{calendar_text}\n\n"
+            "Ride safe out there!"
+        )
+
+    # ── Deliver to every Telegram-connected user ──
+    db = SessionLocal()
+    try:
+        users = (
+            db.query(UserProfile)
+            .filter(UserProfile.telegram_id.isnot(None), UserProfile.is_active == True)
+            .all()
+        )
+        user_ids = [str(u.user_id) for u in users]
+    finally:
+        db.close()
+
+    sent = 0
+    for uid in user_ids:
+        try:
+            _send_telegram_response(uid, f"🌅 <b>Morning Briefing</b>\n\n{briefing}")
+            sent += 1
+        except Exception as e:
+            logger.error(f"Briefing delivery failed for {uid}: {e}")
+
+    logger.info(f"🌅 Morning briefing delivered to {sent} user(s)")
+    return {"status": "success", "delivered": sent, "risks": len(risks)}
 
 
 # ─── Reminder Delivery Task ────────────────────────────

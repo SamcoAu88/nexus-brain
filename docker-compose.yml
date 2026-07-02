@@ -63,7 +63,9 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: nexus-celery
-    command: celery -A src.tasks.celery_app worker --loglevel=info -Q default,capture,embeddings,heavy
+    # -B embeds Celery Beat in the worker (single-worker setup) so scheduled
+    # tasks like the 07:00 morning briefing fire without a separate container
+    command: celery -A src.tasks.celery_app worker -B --loglevel=info -Q default,capture,embeddings,heavy
     environment:
       DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/nexus_brain"
       REDIS_URL: "redis://redis:6379/0"

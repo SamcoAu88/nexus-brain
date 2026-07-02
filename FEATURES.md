@@ -80,10 +80,14 @@ Tek eksik: takvimini service account ile paylaşmak:
 **Teknik not:** Bu ağda `www.googleapis.com` TLS-intercept ediliyor (antivirüs/proxy);
 bot bu yüzden temiz olan `calendar.googleapis.com` endpoint'ini kullanıyor.
 
+| 20 | **🔊 Sesli cevap (TTS)** | Voice note gönder → bot sesle cevaplar; veya yaz: "sesli cevap ver: ..." | ✅ Canlı test edildi (OpenAI TTS onyx → sendVoice) |
+| 21 | **🌅 Proaktif sabah brifingi** | Her sabah 07:00 AEST otomatik gelir | ✅ Canlı test edildi (Celery Beat + Open-Meteo) |
+| 22 | **🛡 Smart Postie Guard** | Brifing içinde: yağmur/rüzgar/UV/sıcaklık sürüş uyarıları | ✅ Eşikler: yağmur ≥%50, hamle ≥40km/h, UV ≥8, ≥35°C, ≤5°C |
+
 ### Sıradaki adaylar (öncelik sırasıyla)
-1. **Günlük özet** — her sabah 7'de: bugünkü takvim + hatırlatıcılar + hava (Celery Beat)
-2. **Doküman yükleme** — PDF at → oku, hafızaya kat, soru sor
-3. **`/reminders` komutu** — bekleyen hatırlatıcıları listele/iptal et (reminder tablosu gerekir)
+1. **Doküman yükleme** — PDF at → oku, hafızaya kat, soru sor
+2. **`/reminders` komutu** — bekleyen hatırlatıcıları listele/iptal et (reminder tablosu gerekir)
+3. **Spaced-repetition AI koçu** — öğrendiklerini 1-3-7 gün sonra quiz'ler
 
 ---
 
