@@ -134,9 +134,27 @@ def input_router(state: AgentState) -> Dict[str, Any]:
     """
     Classify the incoming message type.
     Sets input_type and input_confidence in state.
+
+    Short confirmations ('yes please', 'hayır') are detected WITHOUT an LLM
+    call and classified as 'confirmation' — they answer the assistant's own
+    previous message, so treating them as greetings/unknown breaks context.
     """
     start = time.time()
     logger.info(f"🔄 [Node 1] Input Router: classifying message")
+
+    # Fast path: bare yes/no answers refer to the previous assistant message
+    try:
+        from src.tasks.agent_tasks import _detect_confirmation
+
+        if _detect_confirmation(state["input"]):
+            logger.info("  → Classified as 'confirmation' (fast path, answers previous message)")
+            return {
+                "input_type": "confirmation",
+                "input_confidence": 0.95,
+                "latency_ms": state.get("latency_ms", 0.0) + (time.time() - start) * 1000,
+            }
+    except Exception as e:
+        logger.warning(f"Confirmation fast-path failed: {e}")
 
     result = _call_llm(
         system_prompt=INPUT_CLASSIFIER_PROMPT,
@@ -667,14 +685,34 @@ def response_generator(state: AgentState) -> Dict[str, Any]:
     reasoning = state.get("reasoning", "")
     input_type = state.get("input_type", "unknown")
 
+    # Recent conversation — essential for interpreting short follow-ups
+    # ("yes please", "tell me more") against the assistant's own last message
+    recent_history = "\n".join(
+        f"{m.get('role', '?')}: {str(m.get('content', ''))[:250]}"
+        for m in state.get("conversation_history", [])[-4:]
+        if isinstance(m, dict) and m.get("content")
+    ) or "(no prior conversation)"
+
+    confirmation_note = ""
+    if input_type == "confirmation":
+        confirmation_note = (
+            "\nIMPORTANT: The user's message is a short YES/NO answer to YOUR "
+            "previous message (the last assistant line above). Respond to THAT — "
+            "confirm the action they agreed to, or acknowledge the decline. "
+            "Do NOT greet them or ask what they need."
+        )
+
     # Create prompt - simpler and clearer
-    user_prompt = f"""Input: {user_input}
+    user_prompt = f"""Recent conversation:
+{recent_history}
+
+Input: {user_input}
 
 Type: {input_type}
 Reasoning: {reasoning if reasoning else "(no additional reasoning)"}
 Relevant memories: {memories_text if memories_text != "None relevant" else "(no relevant memories)"}
 Entities: {entities_text if entities_text != "None" else "(no entities)"}
-
+{confirmation_note}
 Please provide a helpful response to the user's input."""
 
     result = _call_llm(

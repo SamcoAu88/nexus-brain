@@ -67,13 +67,17 @@ _resolved_calendar_id = None
 
 def _resolve_calendar_id(token: str) -> Optional[str]:
     """
-    Figure out which calendar to use, in priority order:
+    Figure out which calendar to WRITE to, in priority order:
       1. The user's personal calendar (if they shared it with the service account)
       2. A bot-owned 'Nexus-Brain' calendar, auto-created and shared TO the user
-         (zero-setup fallback — the user gets an email invite to add it)
+
+    NOTE: only a successful user-calendar probe is cached permanently.
+    The fallback is re-resolved on every call so the moment the user shares
+    their calendar, reads and writes switch over consistently — otherwise
+    create could target one calendar while list reads another.
     """
     global _resolved_calendar_id
-    if _resolved_calendar_id:
+    if _resolved_calendar_id == settings.GOOGLE_CALENDAR_ID:
         return _resolved_calendar_id
 
     headers = {"Authorization": f"Bearer {token}"}
@@ -135,55 +139,95 @@ def _resolve_calendar_id(token: str) -> Optional[str]:
         return None
 
 
+def _readable_calendar_ids(token: str) -> List[str]:
+    """
+    All calendars we can read: the user's shared calendar (if accessible)
+    plus the bot-owned 'Nexus-Brain' calendar (if it exists). Reading BOTH
+    means events stay visible no matter which calendar they were created on.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    ids = []
+
+    probe = requests.get(
+        f"{API_BASE}/calendars/{settings.GOOGLE_CALENDAR_ID}",
+        headers=headers,
+        timeout=15,
+    )
+    if probe.status_code == 200:
+        ids.append(settings.GOOGLE_CALENDAR_ID)
+
+    try:
+        cal_list = requests.get(
+            f"{API_BASE}/users/me/calendarList", headers=headers, timeout=15
+        )
+        if cal_list.status_code == 200:
+            for item in cal_list.json().get("items", []):
+                if item.get("summary") == "Nexus-Brain" and item["id"] not in ids:
+                    ids.append(item["id"])
+    except Exception as e:
+        logger.warning(f"calendarList fetch failed: {e}")
+
+    return ids
+
+
 def list_upcoming_events(days: int = 7, max_results: int = 10) -> List[Dict]:
     """
-    List upcoming events from the user's calendar.
+    List upcoming events, merged across ALL readable calendars (user's +
+    bot-owned), explicitly in the user's timezone (Australia/Brisbane).
 
-    Returns list of {summary, start, end, location} dicts, or [] on failure.
+    Returns list of {summary, start, end, location} dicts sorted by start.
     """
     token = _get_token()
     if not token:
         return []
 
-    calendar_id = _resolve_calendar_id(token)
-    if not calendar_id:
+    calendar_ids = _readable_calendar_ids(token)
+    if not calendar_ids:
         return []
 
-    try:
-        now = datetime.now(_tz())
-        response = requests.get(
-            f"{API_BASE}/calendars/{calendar_id}/events",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "timeMin": now.isoformat(),
-                "timeMax": (now + timedelta(days=days)).isoformat(),
-                "maxResults": max_results,
-                "singleEvents": "true",
-                "orderBy": "startTime",
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
+    now = datetime.now(_tz())
+    time_min = now.isoformat()  # includes +10:00 Brisbane offset
+    time_max = (now + timedelta(days=days)).isoformat()
 
-        events = []
-        for e in response.json().get("items", []):
-            start = e.get("start", {})
-            end = e.get("end", {})
-            events.append(
-                {
+    merged: Dict[tuple, Dict] = {}
+    for cal_id in calendar_ids:
+        try:
+            response = requests.get(
+                f"{API_BASE}/calendars/{cal_id}/events",
+                headers={"Authorization": f"Bearer {token}"},
+                params={
+                    "timeMin": time_min,
+                    "timeMax": time_max,
+                    "maxResults": max_results,
+                    "singleEvents": "true",
+                    "orderBy": "startTime",
+                    "timeZone": settings.USER_TIMEZONE,  # response times in AEST
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+
+            for e in response.json().get("items", []):
+                start = e.get("start", {})
+                end = e.get("end", {})
+                event = {
                     "summary": e.get("summary", "(no title)"),
                     "start": start.get("dateTime", start.get("date", "")),
                     "end": end.get("dateTime", end.get("date", "")),
                     "location": e.get("location", ""),
                 }
-            )
+                # Dedupe events that exist on both calendars
+                merged[(event["summary"].casefold(), event["start"])] = event
 
-        logger.info(f"📅 Calendar: {len(events)} upcoming events ({days} days)")
-        return events
+        except Exception as e:
+            logger.warning(f"Calendar list failed for {cal_id}: {e}")
 
-    except Exception as e:
-        logger.error(f"Calendar list failed: {e}")
-        return []
+    events = sorted(merged.values(), key=lambda ev: ev["start"])[:max_results]
+    logger.info(
+        f"📅 Calendar: {len(events)} upcoming events across "
+        f"{len(calendar_ids)} calendar(s) ({days} days, {settings.USER_TIMEZONE})"
+    )
+    return events
 
 
 def create_event(
@@ -191,23 +235,61 @@ def create_event(
     start_dt: datetime,
     duration_minutes: int = 60,
     description: str = "",
-) -> Optional[str]:
+) -> Dict:
     """
-    Create a calendar event. start_dt may be naive (assumed user timezone).
+    Create a calendar event with Read-Before-Write duplicate protection.
+    start_dt may be naive (assumed user timezone).
 
-    Returns the event's htmlLink on success, None on failure.
+    Returns:
+        {"status": "created", "link": htmlLink}
+        {"status": "duplicate", "existing": {summary, start}}  — already booked
+        {"status": "error"}
     """
     token = _get_token()
     if not token:
-        return None
+        return {"status": "error"}
 
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=_tz())
+
+    # ── Read-Before-Write: does a matching event already exist that day? ──
+    try:
+        day_start = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        for cal_id in _readable_calendar_ids(token):
+            existing = requests.get(
+                f"{API_BASE}/calendars/{cal_id}/events",
+                headers=headers,
+                params={
+                    "timeMin": day_start.isoformat(),
+                    "timeMax": day_end.isoformat(),
+                    "singleEvents": "true",
+                    "timeZone": settings.USER_TIMEZONE,
+                },
+                timeout=15,
+            )
+            if existing.status_code != 200:
+                continue
+
+            for e in existing.json().get("items", []):
+                if e.get("summary", "").casefold().strip() == summary.casefold().strip():
+                    ev_start = e.get("start", {}).get("dateTime", e.get("start", {}).get("date", ""))
+                    logger.info(f"📅 Duplicate detected: '{summary}' already exists at {ev_start}")
+                    return {
+                        "status": "duplicate",
+                        "existing": {"summary": e.get("summary", ""), "start": ev_start},
+                    }
+    except Exception as e:
+        logger.warning(f"Duplicate check failed (continuing with create): {e}")
+
+    # ── Write ──
     calendar_id = _resolve_calendar_id(token)
     if not calendar_id:
-        return None
+        return {"status": "error"}
 
     try:
-        if start_dt.tzinfo is None:
-            start_dt = start_dt.replace(tzinfo=_tz())
         end_dt = start_dt + timedelta(minutes=duration_minutes)
 
         response = requests.post(
@@ -225,11 +307,11 @@ def create_event(
 
         link = response.json().get("htmlLink")
         logger.info(f"📅 Calendar event created: {summary} @ {start_dt}")
-        return link
+        return {"status": "created", "link": link}
 
     except Exception as e:
         logger.error(f"Calendar create failed: {e}")
-        return None
+        return {"status": "error"}
 
 
 def format_events_for_context(events: List[Dict]) -> str:

@@ -36,6 +36,82 @@ VOICE_REPLY_PHRASES = [
     "voice answer", "tell me with voice", "speak to me",
 ]
 
+# Short confirmation / negation detection for context-aware follow-ups
+CONFIRM_YES = [
+    "yes", "yes please", "yeah", "yep", "yup", "sure", "ok", "okay",
+    "do it", "go ahead", "please do", "sounds good", "absolutely",
+    "evet", "evet lütfen", "evet lutfen", "olur", "tamam", "yap",
+    "kur", "ekle", "aynen", "tabii", "tabi", "lütfen", "lutfen",
+]
+CONFIRM_NO = [
+    "no", "nope", "no thanks", "no thank you", "don't", "dont",
+    "cancel", "not now", "never mind", "nevermind",
+    "hayır", "hayir", "istemem", "gerek yok", "iptal", "vazgeç", "vazgec",
+]
+
+# Does an assistant message look like an open offer/question to act?
+PROPOSAL_KEYWORDS = [
+    "remind", "reminder", "hatırlat", "hatirlat",
+    "calendar", "takvim", "schedule", "kurayım", "kurayim",
+    "ekleyeyim", "ayarlayayım", "ayarlayayim",
+    "shall i", "should i", "would you like", "want me to",
+    "ister misin", "ister misiniz", "isterseniz",
+]
+
+
+def _detect_confirmation(text: str) -> Optional[str]:
+    """Return 'yes'/'no' if the message is a short confirmation, else None."""
+    import re
+
+    normalized = re.sub(r"[!.,?🙏👍✅❤️\s]+$", "", text.strip().lower())
+    normalized = re.sub(r"^[\s👍✅]+", "", normalized)
+
+    if len(normalized) > 25:  # long messages are real content, not bare confirmations
+        return None
+    if normalized in CONFIRM_YES:
+        return "yes"
+    if normalized in CONFIRM_NO:
+        return "no"
+    return None
+
+
+def _last_assistant_message(conversation_id: str) -> Optional[str]:
+    """Fetch the most recent assistant message in this conversation."""
+    db = SessionLocal()
+    try:
+        msg = (
+            db.query(Message)
+            .filter(
+                Message.conversation_id == UUID(conversation_id),
+                Message.role == "assistant",
+            )
+            .order_by(Message.created_at.desc())
+            .first()
+        )
+        return msg.content if msg else None
+    finally:
+        db.close()
+
+
+def _persist_exchange(conversation_id: str, user_text: str, assistant_text: str):
+    """Persist a user/assistant exchange handled outside the agent pipeline."""
+    db = SessionLocal()
+    try:
+        db.add(Message(
+            conversation_id=UUID(conversation_id), role="user",
+            content=user_text, content_masked=user_text, tokens_used=0,
+        ))
+        db.add(Message(
+            conversation_id=UUID(conversation_id), role="assistant",
+            content=assistant_text, content_masked=assistant_text, tokens_used=0,
+        ))
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Exchange persistence failed: {e}")
+    finally:
+        db.close()
+
 
 @celery_app.task(name="process_telegram_message", **TASK_DEFAULT_KWARGS)
 def process_telegram_message(
@@ -63,14 +139,45 @@ def process_telegram_message(
         f"user={user_id}, update={telegram_update_id}"
     )
 
+    # ── Context-aware confirmation handling (yes/no follow-ups) ──
+    # When the user replies "yes please" / "hayır" to the bot's own previous
+    # question, resolve WHAT they are answering by reading the last assistant
+    # message — instead of classifying "yes" as a meaningless greeting.
+    scheduling_text = text  # what the intent parser will analyze
+    try:
+        confirmation = _detect_confirmation(text)
+        if confirmation:
+            last_assistant = _last_assistant_message(conversation_id)
+            is_proposal = last_assistant and any(
+                k in last_assistant.lower() for k in PROPOSAL_KEYWORDS
+            ) and "?" in last_assistant
+
+            if is_proposal:
+                if confirmation == "no":
+                    reply = "👍 No worries — I won't set that up. Anything else?"
+                    _send_telegram_response(user_id, reply)
+                    _persist_exchange(conversation_id, text, reply)
+                    logger.info("🔁 Confirmation 'no' — cancelled previous proposal")
+                    return {"status": "success", "input_type": "proposal_declined"}
+
+                # 'yes' → re-parse the assistant's own offer as the scheduling request
+                scheduling_text = (
+                    f"The assistant offered: \"{last_assistant[:400]}\" "
+                    f"and the user confirmed YES. Extract the offered reminder or "
+                    f"calendar event exactly as proposed."
+                )
+                logger.info("🔁 Confirmation 'yes' — executing previous proposal")
+    except Exception as conf_err:
+        logger.warning(f"Confirmation handling failed, continuing: {conf_err}")
+
     # ── Scheduling intent (reminders / calendar events) ──
     # Handled BEFORE the agent so "remind me at 16:22" actually schedules
     # something instead of the LLM apologizing that it can't set alarms.
     try:
         from src.tools.reminders import wants_scheduling, parse_scheduling_intent
 
-        if wants_scheduling(text):
-            intent = parse_scheduling_intent(text)
+        if wants_scheduling(scheduling_text) or scheduling_text != text:
+            intent = parse_scheduling_intent(scheduling_text)
             if intent:
                 when = intent["datetime"]
                 when_str = when.strftime("%A %d %B, %H:%M")
@@ -79,29 +186,40 @@ def process_telegram_message(
                     send_reminder.apply_async(
                         args=[user_id, intent["message"]], eta=when
                     )
-                    _send_telegram_response(
-                        user_id,
+                    reply = (
                         f"⏰ Done! I'll remind you: <b>{intent['message']}</b>\n"
-                        f"📅 {when_str}",
+                        f"📅 {when_str}"
                     )
+                    _send_telegram_response(user_id, reply)
+                    _persist_exchange(conversation_id, text, reply)
                     logger.info(f"⏰ Reminder scheduled for {when}: {intent['message']}")
                     return {"status": "success", "input_type": "reminder_set"}
 
                 if intent["action"] == "calendar_event":
                     from src.tools.calendar import create_event
 
-                    link = create_event(
+                    result = create_event(
                         summary=intent["message"],
                         start_dt=when,
                         duration_minutes=intent["duration_minutes"],
                     )
-                    if link:
-                        _send_telegram_response(
-                            user_id,
+                    if result["status"] == "created":
+                        reply = (
                             f"📅 Added to your calendar: <b>{intent['message']}</b>\n"
-                            f"🕐 {when_str}\n<a href=\"{link}\">Open in Google Calendar</a>",
+                            f"🕐 {when_str}\n<a href=\"{result['link']}\">Open in Google Calendar</a>"
                         )
+                        _send_telegram_response(user_id, reply)
+                        _persist_exchange(conversation_id, text, reply)
                         return {"status": "success", "input_type": "calendar_event_created"}
+                    elif result["status"] == "duplicate":
+                        existing = result["existing"]
+                        reply = (
+                            f"📅 <b>{existing['summary']}</b> is already on your calendar "
+                            f"({existing['start'][:16].replace('T', ' ')}) — no need to add it twice! 👍"
+                        )
+                        _send_telegram_response(user_id, reply)
+                        _persist_exchange(conversation_id, text, reply)
+                        return {"status": "success", "input_type": "calendar_event_duplicate"}
                     else:
                         _send_telegram_response(
                             user_id,
