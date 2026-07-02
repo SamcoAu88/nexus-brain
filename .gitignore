@@ -56,3 +56,8 @@ Thumbs.db
 # Development
 *.sock
 *.pid
+
+# Google service account credentials - NEVER commit
+credentials.json
+token.json
+*.serviceaccount.json

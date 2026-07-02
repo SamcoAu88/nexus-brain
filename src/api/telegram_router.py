@@ -145,13 +145,18 @@ async def telegram_webhook(
         )
     # NOTE: DON'T CLOSE DB HERE - we still need it below!
 
-    # 6. Extract message text (now guaranteed to have correct structure)
+    # 6. Extract message content (now guaranteed to have correct structure)
     message = update.message
     text = message.text if message and message.text else ""
     chat_id = message.chat.id if message and message.chat else None
     message_id = message.message_id if message else None
+    voice_file_id = message.voice.file_id if message and message.voice else None
+    photo_file_id = (
+        message.photo[-1].file_id if message and message.photo else None
+    )  # last = highest resolution
+    caption = message.caption if message and message.caption else ""
 
-    if text and chat_id:
+    if (text or voice_file_id or photo_file_id) and chat_id:
         try:
             # Find or create user by telegram_id
             from src.models.memory import UserProfile
@@ -201,17 +206,38 @@ async def telegram_webhook(
                 db.commit()
                 db.refresh(conversation)
 
-            # Run the agent in background via Celery (async, durable, retriable)
-            from src.tasks.agent_tasks import process_telegram_message
+            # Enqueue to the right Celery task based on message type
+            if voice_file_id:
+                from src.tasks.agent_tasks import process_telegram_voice
 
-            process_telegram_message.delay(
-                text=text,
-                user_id=str(user.user_id),
-                conversation_id=str(conversation.conversation_id),
-                telegram_update_id=update_id,
-            )
+                process_telegram_voice.delay(
+                    file_id=voice_file_id,
+                    user_id=str(user.user_id),
+                    conversation_id=str(conversation.conversation_id),
+                    telegram_update_id=update_id,
+                )
+                logger.info(f"🎤 Update {update_id} enqueued as VOICE message")
+            elif photo_file_id:
+                from src.tasks.agent_tasks import process_telegram_photo
 
-            logger.info(f"✅ Update {update_id} enqueued to Celery for agent processing")
+                process_telegram_photo.delay(
+                    file_id=photo_file_id,
+                    caption=caption,
+                    user_id=str(user.user_id),
+                    conversation_id=str(conversation.conversation_id),
+                    telegram_update_id=update_id,
+                )
+                logger.info(f"📷 Update {update_id} enqueued as PHOTO message")
+            else:
+                from src.tasks.agent_tasks import process_telegram_message
+
+                process_telegram_message.delay(
+                    text=text,
+                    user_id=str(user.user_id),
+                    conversation_id=str(conversation.conversation_id),
+                    telegram_update_id=update_id,
+                )
+                logger.info(f"✅ Update {update_id} enqueued to Celery for agent processing")
 
         except Exception as e:
             logger.error(f"Failed to enqueue agent: {e}")
@@ -249,6 +275,10 @@ WELCOME_TEXT = (
     "🧠 Remember facts about you across conversations\n"
     "🔍 Search my memory semantically (meaning, not just keywords)\n"
     "🌐 Look up current information on the web\n"
+    "⏰ Set reminders — <i>\"remind me to take medicine at 16:00\"</i>\n"
+    "📅 Read &amp; add to your Google Calendar\n"
+    "🎤 Understand voice notes (just talk to me)\n"
+    "📷 Analyze photos you send\n"
     "🔒 Detect and mask sensitive data (emails, cards, SSNs)\n\n"
     "<b>Commands:</b>\n"
     "/help — full command list and examples\n"
@@ -266,9 +296,12 @@ HELP_TEXT = (
     "<b>Things to try:</b>\n"
     "• <i>My name is Alex and I work as a designer</i> — I'll remember it\n"
     "• <i>What do you know about me?</i> — I'll list everything\n"
-    "• <i>Remember: my sister's birthday is March 5</i> — explicit memory\n"
-    "• <i>What's the latest AI news?</i> — live web search\n"
-    "• <i>Explain transformers like I'm five</i> — general knowledge\n\n"
+    "• <i>Remind me to take medicine at 16:00</i> — real reminder ⏰\n"
+    "• <i>Add dentist appointment tomorrow 2pm to my calendar</i> 📅\n"
+    "• <i>What's on my calendar this week?</i> — reads your schedule\n"
+    "• 🎤 Send a voice note — I'll transcribe and answer\n"
+    "• 📷 Send a photo — I'll analyze it and remember it\n"
+    "• <i>What's the latest AI news?</i> — live web search\n\n"
     "I keep the recent conversation in context, so follow-up questions work too."
 )
 

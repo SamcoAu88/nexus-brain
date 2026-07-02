@@ -27,13 +27,30 @@ class TelegramChat(BaseModel):
     last_name: Optional[str] = None
 
 
+class TelegramVoice(BaseModel):
+    """Telegram voice note"""
+    file_id: str
+    duration: int = 0
+    mime_type: Optional[str] = None
+
+
+class TelegramPhotoSize(BaseModel):
+    """One size variant of a Telegram photo"""
+    file_id: str
+    width: int = 0
+    height: int = 0
+
+
 class TelegramMessage(BaseModel):
     """Telegram message"""
     message_id: int
     date: int
     chat: TelegramChat
     from_user: Optional[TelegramUser] = Field(None, alias="from")
-    text: Optional[str] = None  # Message text (what we need!)
+    text: Optional[str] = None  # Message text
+    voice: Optional[TelegramVoice] = None  # Voice note (→ Whisper transcription)
+    photo: Optional[list[TelegramPhotoSize]] = None  # Photo sizes (→ vision)
+    caption: Optional[str] = None  # Caption on photo/voice
 
     class Config:
         populate_by_name = True  # Allow both 'from' and 'from_user'

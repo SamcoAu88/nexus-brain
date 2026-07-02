@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # External Services
     TAVILY_API_KEY: Optional[str] = None
     PERPLEXITY_API_KEY: Optional[str] = None  # Web search via Perplexity Sonar
+
+    # Google Calendar (service account auth — share your calendar with the SA email)
+    GOOGLE_CREDENTIALS_PATH: str = "credentials.json"
+    GOOGLE_CALENDAR_ID: str = "sametbaybatur@gmail.com"
+
+    # User locale (for reminders and calendar times)
+    USER_TIMEZONE: str = "Australia/Brisbane"
     LANGFUSE_PUBLIC_KEY: Optional[str] = None
     LANGFUSE_SECRET_KEY: Optional[str] = None
     SENTRY_DSN: Optional[str] = None

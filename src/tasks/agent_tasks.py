@@ -54,6 +54,55 @@ def process_telegram_message(
         f"user={user_id}, update={telegram_update_id}"
     )
 
+    # ── Scheduling intent (reminders / calendar events) ──
+    # Handled BEFORE the agent so "remind me at 16:22" actually schedules
+    # something instead of the LLM apologizing that it can't set alarms.
+    try:
+        from src.tools.reminders import wants_scheduling, parse_scheduling_intent
+
+        if wants_scheduling(text):
+            intent = parse_scheduling_intent(text)
+            if intent:
+                when = intent["datetime"]
+                when_str = when.strftime("%A %d %B, %H:%M")
+
+                if intent["action"] == "reminder":
+                    send_reminder.apply_async(
+                        args=[user_id, intent["message"]], eta=when
+                    )
+                    _send_telegram_response(
+                        user_id,
+                        f"⏰ Done! I'll remind you: <b>{intent['message']}</b>\n"
+                        f"📅 {when_str}",
+                    )
+                    logger.info(f"⏰ Reminder scheduled for {when}: {intent['message']}")
+                    return {"status": "success", "input_type": "reminder_set"}
+
+                if intent["action"] == "calendar_event":
+                    from src.tools.calendar import create_event
+
+                    link = create_event(
+                        summary=intent["message"],
+                        start_dt=when,
+                        duration_minutes=intent["duration_minutes"],
+                    )
+                    if link:
+                        _send_telegram_response(
+                            user_id,
+                            f"📅 Added to your calendar: <b>{intent['message']}</b>\n"
+                            f"🕐 {when_str}\n<a href=\"{link}\">Open in Google Calendar</a>",
+                        )
+                        return {"status": "success", "input_type": "calendar_event_created"}
+                    else:
+                        _send_telegram_response(
+                            user_id,
+                            "⚠️ I couldn't reach your Google Calendar. Make sure it's "
+                            "shared with my service account, then try again.",
+                        )
+                        return {"status": "error", "input_type": "calendar_event_failed"}
+    except Exception as sched_err:
+        logger.warning(f"Scheduling pre-check failed, continuing to agent: {sched_err}")
+
     try:
         result = asyncio.run(
             run_agent(
@@ -164,6 +213,173 @@ def cleanup_expired():
     finally:
         if db is not None:
             db.close()
+
+
+# ─── Voice & Photo Tasks ───────────────────────────────
+
+
+def _download_telegram_file(file_id: str) -> bytes:
+    """Download a file from Telegram's servers by file_id."""
+    import requests
+    from src.core.config import settings
+
+    token = settings.TELEGRAM_BOT_TOKEN
+    meta = requests.get(
+        f"https://api.telegram.org/bot{token}/getFile",
+        params={"file_id": file_id},
+        timeout=15,
+    )
+    meta.raise_for_status()
+    file_path = meta.json()["result"]["file_path"]
+
+    content = requests.get(
+        f"https://api.telegram.org/file/bot{token}/{file_path}", timeout=30
+    )
+    content.raise_for_status()
+    return content.content
+
+
+@celery_app.task(name="process_telegram_voice", **TASK_DEFAULT_KWARGS)
+def process_telegram_voice(
+    file_id: str,
+    user_id: str,
+    conversation_id: str,
+    telegram_update_id: Optional[int] = None,
+):
+    """
+    Voice note pipeline: download → Whisper transcription → normal agent flow.
+    """
+    import io
+    from openai import OpenAI
+    from src.core.config import settings
+
+    logger.info(f"🎤 [Celery] Processing voice message: update={telegram_update_id}")
+
+    try:
+        audio_bytes = _download_telegram_file(file_id)
+
+        client = OpenAI(api_key=settings.OPENAI_API_KEY)
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "voice.ogg"  # Whisper needs a filename hint
+
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+        )
+        text = transcription.text.strip()
+        logger.info(f"🎤 Transcribed ({len(text)} chars): {text[:80]}...")
+
+        if not text:
+            _send_telegram_response(user_id, "🎤 I couldn't hear anything in that voice note — try again?")
+            return {"status": "error", "reason": "empty transcription"}
+
+        # Echo what was heard, then run the normal pipeline
+        _send_telegram_response(user_id, f"🎤 <i>I heard:</i> \"{text}\"")
+        return process_telegram_message(
+            text=text,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            telegram_update_id=telegram_update_id,
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Voice processing failed: {e}")
+        _send_telegram_response(
+            user_id, "🎤 Sorry, I had trouble processing that voice note. Please try again."
+        )
+        raise
+
+
+@celery_app.task(name="process_telegram_photo", **TASK_DEFAULT_KWARGS)
+def process_telegram_photo(
+    file_id: str,
+    caption: str,
+    user_id: str,
+    conversation_id: str,
+    telegram_update_id: Optional[int] = None,
+):
+    """
+    Photo pipeline: download → GPT-4o-mini vision → respond (+ store as memory).
+    """
+    import base64
+    from litellm import completion
+    from src.core.config import settings
+
+    logger.info(f"📷 [Celery] Processing photo: update={telegram_update_id}")
+
+    try:
+        image_bytes = _download_telegram_file(file_id)
+        b64 = base64.b64encode(image_bytes).decode()
+
+        user_prompt = caption or "Describe this image and note anything worth remembering."
+
+        response = completion(
+            model="gpt-4o-mini",
+            api_key=settings.OPENAI_API_KEY,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Nexus-Brain, a personal AI assistant. The user sent you a photo"
+                        + (f" with the caption: '{caption}'" if caption else "")
+                        + ". Answer their caption if present, otherwise describe what you see, "
+                        "concisely and helpfully."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                        },
+                    ],
+                },
+            ],
+            max_tokens=600,
+        )
+
+        answer = response.choices[0].message.content or "I couldn't analyze that image."
+        _send_telegram_response(user_id, f"📷 {answer}")
+
+        # Store the image analysis as a memory so it's searchable later
+        from src.agents.tools import store_memory
+
+        store_memory(
+            content=f"User sent a photo{' with caption: ' + caption if caption else ''}. "
+            f"Analysis: {answer}",
+            user_id=UUID(user_id),
+            title="Photo memory",
+            source_type="message",
+            importance=0.5,
+        )
+
+        return {"status": "success", "input_type": "photo"}
+
+    except Exception as e:
+        logger.error(f"❌ Photo processing failed: {e}")
+        _send_telegram_response(
+            user_id, "📷 Sorry, I had trouble analyzing that photo. Please try again."
+        )
+        raise
+
+
+# ─── Reminder Delivery Task ────────────────────────────
+
+
+@celery_app.task(name="send_reminder", **TASK_DEFAULT_KWARGS)
+def send_reminder(user_id: str, reminder_text: str):
+    """
+    Deliver a scheduled reminder to the user via Telegram.
+    Scheduled with apply_async(eta=...) — Celery holds it until due.
+    """
+    logger.info(f"⏰ [Celery] Delivering reminder to {user_id}: {reminder_text}")
+    _send_telegram_response(
+        user_id,
+        f"⏰ <b>Reminder!</b>\n\n{reminder_text}",
+    )
+    return {"status": "delivered", "reminder": reminder_text}
 
 
 # ─── Helper: Send Telegram Response ──────────────────

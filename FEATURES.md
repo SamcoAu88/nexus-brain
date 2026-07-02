@@ -57,25 +57,33 @@ Son güncelleme: 2 Temmuz 2026
 
 ---
 
-## ❌ HİÇ PLANDA OLMAYAN AMA İSTENEN (yeni yol haritası)
+## 🆕 2 TEMMUZ 2026'DA EKLENEN ÖZELLİKLER
 
-### 📅 Google Calendar — kurulum gerektiriyor
-Orijinal 6 sprint planında **yoktu**. Eklemek için:
-1. [Google Cloud Console](https://console.cloud.google.com) → yeni proje → Calendar API'yi etkinleştir
-2. OAuth 2.0 Client ID oluştur (Desktop app) → `credentials.json` indir
-3. `pip install google-api-python-client google-auth-oauthlib`
-4. İlk çalıştırmada tarayıcıda izin ver → `token.json` oluşur
-5. `src/tools/calendar.py` yazılır: `list_events()`, `create_event()`, `find_free_slot()`
-6. Reasoner'a intent detection eklenir: "yarın ne var takvimimde?" → calendar tool
+| # | Özellik | Nasıl Test Edilir | Durum |
+|---|---------|-------------------|-------|
+| 15 | **⏰ Hatırlatıcılar** | `Remind me to take medicine at 16:22` | ✅ Çalışıyor (Celery eta task → Telegram bildirim) |
+| 16 | **📅 Takvim okuma** | `What's on my calendar this week?` | ✅ Kod hazır — takvim paylaşımı gerekli (aşağıya bak) |
+| 17 | **📅 Takvime ekleme** | `Add dentist appointment tomorrow 2pm to my calendar` | ✅ Kod hazır — takvim paylaşımı gerekli |
+| 18 | **🎤 Sesli mesaj** | Telegram'dan voice note gönder | ✅ Whisper transkripsiyon → normal pipeline |
+| 19 | **📷 Fotoğraf anlama** | Fotoğraf gönder (caption'lı veya caption'sız) | ✅ GPT-4o-mini vision → cevap + hafızaya kayıt |
 
-**Hazır olduğunda bana söyle, credentials.json'ı alınca 5-6. adımları ben yazarım.**
+### 📅 Google Calendar — SON 1 ADIM (sende!)
+Service account bağlantısı test edildi ve **çalışıyor** (TLS + auth + API ✓).
+Tek eksik: takvimini service account ile paylaşmak:
 
-### Diğer state-of-the-art adaylar (öncelik sırasıyla)
-1. **Hatırlatıcılar** — "remind me at 5pm" → Celery Beat scheduled task → Telegram mesajı (altyapı %90 hazır!)
-2. **Voice mesaj** — Whisper API zaten OpenAI key'inle çalışır, sadece handler gerek
-3. **Fotoğraf anlama** — "bu faturayı kaydet" → vision + memory
-4. **Günlük özet** — her sabah 8'de: bugünkü takvim + hava + hatırlatıcılar
-5. **Doküman yükleme** — PDF at → oku, hafızaya kat, soru sor
+1. [Google Calendar](https://calendar.google.com) → ⚙️ Ayarlar
+2. Sol menüde takvimin → **"Belirli kişilerle paylaş"** (Share with specific people)
+3. Şu e-postayı ekle: `doc-writer@my-automation-project-500704.iam.gserviceaccount.com`
+4. İzin: **"Etkinliklerde değişiklik yapma"** (Make changes to events)
+5. Kaydet — bot anında takvimini görebilir ve etkinlik ekleyebilir
+
+**Teknik not:** Bu ağda `www.googleapis.com` TLS-intercept ediliyor (antivirüs/proxy);
+bot bu yüzden temiz olan `calendar.googleapis.com` endpoint'ini kullanıyor.
+
+### Sıradaki adaylar (öncelik sırasıyla)
+1. **Günlük özet** — her sabah 7'de: bugünkü takvim + hatırlatıcılar + hava (Celery Beat)
+2. **Doküman yükleme** — PDF at → oku, hafızaya kat, soru sor
+3. **`/reminders` komutu** — bekleyen hatırlatıcıları listele/iptal et (reminder tablosu gerekir)
 
 ---
 

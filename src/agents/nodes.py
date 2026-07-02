@@ -420,6 +420,7 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
     from src.tools.search import needs_web_search, web_search
     user_input = state.get("input", "")
     web_context = ""
+    calendar_context = ""
 
     if needs_web_search(user_input):
         logger.info("  → Fetching current information via web search...")
@@ -429,6 +430,19 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"Web search failed: {e}")
             web_context = ""
+
+    # Check if the user is asking about their calendar/schedule
+    try:
+        from src.tools.calendar import needs_calendar, list_upcoming_events, format_events_for_context
+
+        if needs_calendar(user_input):
+            logger.info("  → Fetching Google Calendar events...")
+            events = list_upcoming_events(days=7, max_results=10)
+            calendar_context = format_events_for_context(events)
+            logger.info(f"  → Calendar: {len(events)} events injected into context")
+    except Exception as e:
+        logger.warning(f"Calendar fetch failed: {e}")
+        calendar_context = ""
 
     # Build memories text with safe extraction (no PII masking on retrieved memories!)
     # Memories from DB should be used AS-IS to preserve user context
@@ -508,6 +522,10 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
     # Append web context if available
     if web_context:
         user_message = f"{user_message}\n\nCurrent Information from Web:\n{web_context}"
+
+    # Append calendar context if available
+    if calendar_context:
+        user_message = f"{user_message}\n\nUser's Google Calendar (next 7 days):\n{calendar_context}"
 
     result = _call_llm(
         system_prompt=REASONER_SYSTEM_PROMPT,
