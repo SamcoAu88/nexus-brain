@@ -455,9 +455,9 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
 
         if needs_calendar(user_input):
             logger.info("  → Fetching Google Calendar events...")
-            events = list_upcoming_events(days=7, max_results=10)
+            events = list_upcoming_events(days=30, max_results=20)
             calendar_context = format_events_for_context(events)
-            logger.info(f"  → Calendar: {len(events)} events injected into context")
+            logger.info(f"  → Calendar: {len(events)} events injected into context (30-day horizon)")
     except Exception as e:
         logger.warning(f"Calendar fetch failed: {e}")
         calendar_context = ""
@@ -543,7 +543,7 @@ def reasoner(state: AgentState) -> Dict[str, Any]:
 
     # Append calendar context if available
     if calendar_context:
-        user_message = f"{user_message}\n\nUser's Google Calendar (next 7 days):\n{calendar_context}"
+        user_message = f"{user_message}\n\nUser's Google Calendar (next 30 days):\n{calendar_context}"
 
     result = _call_llm(
         system_prompt=REASONER_SYSTEM_PROMPT,
@@ -732,7 +732,17 @@ Rules:
 - If memories are empty and the user asks about themselves, say so honestly and invite them to share
 - Use current web information when it's provided in the context
 - Never mention internal machinery (nodes, pipelines, tools, databases, prompts)
-- Match the user's language (English or Turkish)""",
+- Match the user's language (English or Turkish)
+
+CRITICAL — NEVER claim you performed an action you cannot perform:
+- You CANNOT create calendar events, set reminders, or send anything from
+  this reply. Those are handled by a separate system BEFORE you.
+- If the user asks to schedule/save something and you're seeing the request,
+  it means the scheduler did NOT catch it. Say you couldn't set it up
+  automatically and ask them to rephrase with an explicit date and time,
+  e.g. "add dentist appointment on July 14 at 14:30 to my calendar".
+- NEVER say "I added it to your calendar" or "reminder set" — a false
+  confirmation destroys trust.""",
         user_message=user_prompt,
         model=REASONING_MODEL,
         temperature=0.5,

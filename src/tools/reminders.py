@@ -21,7 +21,10 @@ REMINDER_KEYWORDS = [
     # Broad calendar triggers — the LLM parser returns action "none"
     # for questions like "what's on my calendar", which then fall
     # through to the normal agent (with calendar read context)
-    "to my calendar", "takvime ekle", "takvimime ekle", "takvime koy",
+    "to my calendar", "google calendar", "to the calendar",
+    "save it to", "add it to", "put it in", "put it on",
+    "takvime ekle", "takvimime ekle", "takvime koy", "takvime kaydet",
+    "takvimime kaydet", "google takvim",
     "schedule a", "schedule an", "book a", "book an", "set a reminder",
     "appointment at", "appointment for", "randevu ekle",
 ]
@@ -35,6 +38,9 @@ Rules:
 - If the parsed time is already in the past today, assume tomorrow
 - "in 20 minutes" / "20 dakika sonra" = relative from now
 - action is "reminder" for reminders/alarms, "calendar_event" for calendar entries
+- If the message refers to something discussed earlier ("save IT to my calendar",
+  "add THAT appointment"), resolve the subject, date and time from the
+  conversation context provided
 - If the message is NOT a scheduling request, return action "none"
 
 Respond with ONLY a JSON object:
@@ -47,9 +53,13 @@ def wants_scheduling(text: str) -> bool:
     return any(k in lower for k in REMINDER_KEYWORDS)
 
 
-def parse_scheduling_intent(text: str) -> Optional[Dict]:
+def parse_scheduling_intent(text: str, context: str = "") -> Optional[Dict]:
     """
     Parse a scheduling request into {action, datetime, message, duration_minutes}.
+
+    `context` should carry recent conversation so follow-ups like
+    "save it to my calendar" can resolve WHAT and WHEN from prior messages.
+
     Returns None if parsing fails or the message isn't a scheduling request.
     """
     from src.agents.nodes import _call_llm
@@ -57,12 +67,16 @@ def parse_scheduling_intent(text: str) -> Optional[Dict]:
     tz = ZoneInfo(settings.USER_TIMEZONE)
     now = datetime.now(tz)
 
+    user_message = text
+    if context:
+        user_message = f"Conversation context:\n{context}\n\nUser's message: {text}"
+
     try:
         result = _call_llm(
             system_prompt=PARSE_PROMPT.format(
                 now=now.strftime("%A, %Y-%m-%d %H:%M"), tz=settings.USER_TIMEZONE
             ),
-            user_message=text,
+            user_message=user_message,
             temperature=0.0,
             max_tokens=200,
         )

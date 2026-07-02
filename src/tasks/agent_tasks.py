@@ -75,6 +75,26 @@ def _detect_confirmation(text: str) -> Optional[str]:
     return None
 
 
+def _recent_context(conversation_id: str, limit: int = 4) -> str:
+    """Last few messages as text — lets the scheduling parser resolve 'it'/'that'."""
+    db = SessionLocal()
+    try:
+        msgs = (
+            db.query(Message)
+            .filter(Message.conversation_id == UUID(conversation_id))
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        msgs.reverse()
+        return "\n".join(f"{m.role}: {m.content[:300]}" for m in msgs)
+    except Exception as e:
+        logger.warning(f"Recent context fetch failed: {e}")
+        return ""
+    finally:
+        db.close()
+
+
 def _last_assistant_message(conversation_id: str) -> Optional[str]:
     """Fetch the most recent assistant message in this conversation."""
     db = SessionLocal()
@@ -177,7 +197,11 @@ def process_telegram_message(
         from src.tools.reminders import wants_scheduling, parse_scheduling_intent
 
         if wants_scheduling(scheduling_text) or scheduling_text != text:
-            intent = parse_scheduling_intent(scheduling_text)
+            # Pass recent conversation so "save IT to my calendar" resolves
+            # the subject/date/time from earlier messages
+            intent = parse_scheduling_intent(
+                scheduling_text, context=_recent_context(conversation_id)
+            )
             if intent:
                 when = intent["datetime"]
                 when_str = when.strftime("%A %d %B, %H:%M")

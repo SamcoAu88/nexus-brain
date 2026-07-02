@@ -170,10 +170,13 @@ def _readable_calendar_ids(token: str) -> List[str]:
     return ids
 
 
-def list_upcoming_events(days: int = 7, max_results: int = 10) -> List[Dict]:
+def list_upcoming_events(days: int = 30, max_results: int = 20) -> List[Dict]:
     """
     List upcoming events, merged across ALL readable calendars (user's +
     bot-owned), explicitly in the user's timezone (Australia/Brisbane).
+
+    Default horizon is 30 days so appointments later in the month (e.g. a
+    dentist visit 12 days out) stay on the radar — 7 days was too narrow.
 
     Returns list of {summary, start, end, location} dicts sorted by start.
     """
@@ -305,9 +308,24 @@ def create_event(
         )
         response.raise_for_status()
 
-        link = response.json().get("htmlLink")
-        logger.info(f"📅 Calendar event created: {summary} @ {start_dt}")
-        return {"status": "created", "link": link}
+        created = response.json()
+        link = created.get("htmlLink")
+        event_id = created.get("id")
+        event_status = created.get("status")  # Google returns 'confirmed' on success
+
+        # VERIFY WRITE: log Google's own confirmation so we can prove the
+        # insert landed, and exactly WHICH calendar it landed on
+        target = "USER calendar" if calendar_id == settings.GOOGLE_CALENDAR_ID else "BOT calendar"
+        logger.info(
+            f"📅 WRITE VERIFIED: '{summary}' @ {start_dt.isoformat()} → "
+            f"{target} ({calendar_id}) | event_id={event_id} | "
+            f"google_status={event_status} | link={link}"
+        )
+
+        if event_status != "confirmed":
+            logger.warning(f"📅 Unexpected Google status for event {event_id}: {event_status}")
+
+        return {"status": "created", "link": link, "event_id": event_id, "calendar_id": calendar_id}
 
     except Exception as e:
         logger.error(f"Calendar create failed: {e}")
