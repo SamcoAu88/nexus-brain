@@ -103,6 +103,67 @@ def search_memory(
                 db.close()
 
 
+def get_recent_memories(
+    user_id: UUID,
+    limit: int = 15,
+) -> List[Dict[str, Any]]:
+    """
+    List the user's most recent memory chunks directly — NO search involved.
+
+    This is the correct tool for "What do you know about me?" style queries:
+    keyword/vector search can't answer "list everything", but a direct
+    listing of recent chunks can.
+
+    Args:
+        user_id: User to scope results to (must be UUID)
+        limit: Max chunks to return
+
+    Returns:
+        List of chunk dicts, newest first
+    """
+    from src.models.memory import Collection
+
+    if isinstance(user_id, str):
+        try:
+            user_id = UUID(user_id)
+        except ValueError as e:
+            logger.error(f"get_recent_memories: invalid user_id: {e}")
+            return []
+
+    db = None
+    try:
+        db = SessionLocal()
+        results = (
+            db.query(MemoryChunk)
+            .join(Source, MemoryChunk.source_id == Source.source_id)
+            .join(Collection, Source.collection_id == Collection.collection_id)
+            .filter(
+                Collection.user_id == user_id,
+                MemoryChunk.is_deleted == False,
+            )
+            .order_by(MemoryChunk.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        logger.info(f"  ✓ get_recent_memories: {len(results)} chunks for user {user_id}")
+        return [
+            {
+                "chunk_id": str(c.chunk_id),
+                "content": c.content,
+                "importance": c.importance,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in results
+        ]
+    except Exception as e:
+        logger.error(f"get_recent_memories error: {e}")
+        return []
+    finally:
+        if db is not None:
+            db.close()
+
+
 def get_conversation_history(
     conversation_id: UUID,
     limit: int = 10,
@@ -230,8 +291,20 @@ def store_memory(
         )
         db.add(chunk)
         db.commit()
+        db.refresh(chunk)
 
         logger.info(f"✅ Memory stored: source={source.source_id}")
+
+        # Enqueue embedding generation so this chunk becomes vector-searchable.
+        # Without this, embedding stays NULL and vector search never finds it.
+        try:
+            from src.tasks.agent_tasks import generate_embeddings
+
+            generate_embeddings.delay(str(chunk.chunk_id), content)
+            logger.info(f"  → Embedding task enqueued for chunk {chunk.chunk_id}")
+        except Exception as embed_err:
+            logger.warning(f"Failed to enqueue embedding task: {embed_err}")
+
         return str(source.source_id)
 
     except Exception as e:

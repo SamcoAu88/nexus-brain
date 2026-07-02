@@ -59,39 +59,38 @@ def vector_search(
         db = SessionLocal()
         logger.debug(f"🔍 vector_search: query='{query[:30]}...', user_id={user_id}, top_k={top_k}")
 
-        # pgvector cosine similarity via <=> operator
-        # The embedding column is stored as vector(1536)
-        embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+        # NOTE: This database does NOT have the pgvector extension — the
+        # embedding column is a plain float8[] array. Cosine similarity is
+        # computed in Python, which is more than fast enough for a personal
+        # memory store (thousands of chunks).
+        from src.models.memory import Collection
 
-        sql = text(
-            """
-            SELECT
-                mc.chunk_id,
-                mc.content,
-                mc.importance,
-                mc.created_at,
-                1 - (mc.embedding <=> :embedding::vector) AS score
-            FROM memory_chunks mc
-            JOIN sources s ON mc.source_id = s.source_id
-            JOIN collections c ON s.collection_id = c.collection_id
-            WHERE c.user_id = :user_id::uuid
-              AND mc.is_deleted = false
-              AND mc.embedding IS NOT NULL
-              AND mc.importance >= :min_importance
-            ORDER BY score DESC
-            LIMIT :top_k
-            """
+        rows = (
+            db.query(
+                MemoryChunk.chunk_id,
+                MemoryChunk.content,
+                MemoryChunk.importance,
+                MemoryChunk.created_at,
+                MemoryChunk.embedding,
+            )
+            .join(Source, MemoryChunk.source_id == Source.source_id)
+            .join(Collection, Source.collection_id == Collection.collection_id)
+            .filter(
+                Collection.user_id == user_id,
+                MemoryChunk.is_deleted == False,
+                MemoryChunk.embedding.isnot(None),
+                MemoryChunk.importance >= min_importance,
+            )
+            .all()
         )
 
-        results = db.execute(
-            sql,
-            {
-                "embedding": embedding_str,
-                "user_id": str(user_id),  # Convert UUID to string for PostgreSQL
-                "top_k": top_k,
-                "min_importance": min_importance,
-            },
-        ).fetchall()
+        scored = []
+        for row in rows:
+            score = _cosine_similarity(embedding, row.embedding)
+            if score is not None:
+                scored.append((score, row))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
 
         return [
             {
@@ -99,9 +98,9 @@ def vector_search(
                 "content": row.content,
                 "importance": row.importance,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
-                "score": float(row.score) if row.score is not None else 0.0,
+                "score": float(score),
             }
-            for row in results
+            for score, row in scored[:top_k]
         ]
 
     except Exception as e:
@@ -110,6 +109,25 @@ def vector_search(
     finally:
         if db is not None:
             db.close()
+
+
+def _cosine_similarity(a, b) -> Optional[float]:
+    """Cosine similarity between two float lists. Returns None on mismatch."""
+    try:
+        if a is None or b is None or len(a) != len(b):
+            return None
+        dot = 0.0
+        norm_a = 0.0
+        norm_b = 0.0
+        for x, y in zip(a, b):
+            dot += x * y
+            norm_a += x * x
+            norm_b += y * y
+        if norm_a == 0.0 or norm_b == 0.0:
+            return None
+        return dot / ((norm_a ** 0.5) * (norm_b ** 0.5))
+    except Exception:
+        return None
 
 
 def store_embedding(chunk_id: UUID, embedding: List[float]) -> bool:
@@ -126,24 +144,18 @@ def store_embedding(chunk_id: UUID, embedding: List[float]) -> bool:
     db = None
     try:
         db = SessionLocal()
-        embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
-
-        sql = text(
-            """
-            UPDATE memory_chunks
-            SET embedding = :embedding::vector
-            WHERE chunk_id = :chunk_id
-            """
-        )
-
-        db.execute(
-            sql,
-            {
-                "embedding": embedding_str,
-                "chunk_id": chunk_id,
-            },
+        # embedding column is float8[] — SQLAlchemy handles a Python list natively
+        updated = (
+            db.query(MemoryChunk)
+            .filter(MemoryChunk.chunk_id == chunk_id)
+            .update({"embedding": embedding}, synchronize_session=False)
         )
         db.commit()
+
+        if updated == 0:
+            logger.warning(f"store_embedding: no chunk found with id {chunk_id}")
+            return False
+
         logger.debug(f"✅ Stored embedding for chunk {chunk_id}")
         return True
 

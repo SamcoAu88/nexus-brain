@@ -219,42 +219,48 @@ def memory_retriever(state: AgentState) -> Dict[str, Any]:
 
     is_about_me = any(keyword in input_text.lower() for keyword in about_me_keywords)
 
-    # Generate search query for questions and commands
-    if input_type in ("question", "command"):
+    # "About me" is a LISTING request, not a search: fetch the user's most
+    # recent memories directly. Works regardless of input_type because the
+    # router sometimes classifies "Who am I?" as a greeting.
+    if is_about_me:
         try:
-            if is_about_me:
-                # For "about me" queries, search broadly for user's information
-                memory_query = "user profile personal information name location job work"
-                logger.info("  → Detected 'about me' query, loading all user memories")
-            else:
-                query_result = _call_llm(
-                    system_prompt=MEMORY_QUERY_PROMPT,
-                    user_message=(
-                        f"Message type: {input_type}\n"
-                        f"Message: {input_text}\n"
-                        f"Conversation history: {len(history)} messages"
-                    ),
-                    temperature=0.0,
-                    max_tokens=150,
-                )
+            from src.agents.tools import get_recent_memories
 
-                import json
+            memory_query = "(recent memories listing)"
+            memories = get_recent_memories(user_id=user_id, limit=15)
+            logger.info(f"  → 'About me' query: listed {len(memories)} recent memories directly")
+        except Exception as e:
+            logger.error(f"Recent memories listing failed: {e}")
+            memories = []
 
-                try:
-                    parsed = json.loads(query_result["content"])
-                    memory_query = parsed.get("query", input_text)
-                except (json.JSONDecodeError, KeyError, TypeError) as parse_err:
-                    logger.warning(f"Query parsing failed: {parse_err}, using input text")
-                    memory_query = input_text
+    # For other questions/commands, generate a search query and run hybrid search
+    elif input_type in ("question", "command"):
+        try:
+            query_result = _call_llm(
+                system_prompt=MEMORY_QUERY_PROMPT,
+                user_message=(
+                    f"Message type: {input_type}\n"
+                    f"Message: {input_text}\n"
+                    f"Conversation history: {len(history)} messages"
+                ),
+                temperature=0.0,
+                max_tokens=150,
+            )
 
-            # Search memories - increased limit for "about me" queries
-            limit = 10 if is_about_me else 5
+            import json
+
+            try:
+                parsed = json.loads(query_result["content"])
+                memory_query = parsed.get("query", input_text)
+            except (json.JSONDecodeError, KeyError, TypeError) as parse_err:
+                logger.warning(f"Query parsing failed: {parse_err}, using input text")
+                memory_query = input_text
 
             try:
                 memories = search_memory(
                     query=memory_query,
                     user_id=user_id,
-                    limit=limit,
+                    limit=5,
                 )
             except Exception as search_err:
                 logger.error(f"Memory search failed: {search_err}, continuing with empty memories")
@@ -692,6 +698,42 @@ def memory_writer(state: AgentState) -> Dict[str, Any]:
     logger.info("🔄 [Node 6] Memory Writer")
 
     memory_stored = False
+
+    # ALWAYS persist both messages to the messages table so that
+    # get_conversation_history has data to return. Without this the
+    # messages table stays empty and the bot has zero conversation context.
+    try:
+        from src.core.database import SessionLocal
+        from src.models.memory import Message
+
+        db = SessionLocal()
+        try:
+            user_msg = Message(
+                conversation_id=state["conversation_id"],
+                role="user",
+                content=state["input"],
+                content_masked=state.get("pii_masked_input") or state["input"],
+                tokens_used=0,
+            )
+            assistant_msg = Message(
+                conversation_id=state["conversation_id"],
+                role="assistant",
+                content=state.get("response", ""),
+                content_masked=state.get("response", ""),
+                tokens_used=state.get("tokens_used", 0),
+                model_used=state.get("model_used"),
+            )
+            db.add(user_msg)
+            db.add(assistant_msg)
+            db.commit()
+            logger.info("  → Conversation messages persisted")
+        except Exception as msg_err:
+            db.rollback()
+            logger.error(f"Failed to persist messages: {msg_err}")
+        finally:
+            db.close()
+    except Exception as outer_err:
+        logger.error(f"Message persistence setup failed: {outer_err}")
 
     # Store as memory if user shared important information
     if state.get("input_type") in ("memory",) or (

@@ -51,7 +51,13 @@ def bm25_search(
     try:
         # Try tsvector search first (requires migration)
         try:
-            return _tsvector_search(db, query, user_id, top_k, min_importance)
+            results = _tsvector_search(db, query, user_id, top_k, min_importance)
+            if results:
+                return results
+            # tsvector succeeded but found nothing — try ILIKE which matches
+            # partial words and is more forgiving for short/generic queries
+            logger.info("BM25 tsvector found 0 results, trying ILIKE fallback")
+            return _ilike_search(db, query, user_id, top_k, min_importance)
         except Exception:
             # Fallback to ILIKE if tsvector column doesn't exist
             logger.info("BM25 tsvector unavailable, falling back to ILIKE search")
@@ -74,8 +80,12 @@ def _tsvector_search(
     """
     PostgreSQL tsvector full-text search with ts_rank ranking.
     """
-    # Convert query to tsquery format
-    tsquery = " & ".join(query.strip().split()[:10])  # Max 10 terms
+    # Convert query to tsquery format.
+    # Use OR (|) not AND (&): with AND, multi-word queries like
+    # "user profile personal information name" require ALL words in the
+    # same chunk and virtually never match. OR matches any term and
+    # ts_rank still sorts the best matches first.
+    tsquery = " | ".join(query.strip().split()[:10])  # Max 10 terms
 
     if not tsquery:
         return []
@@ -91,7 +101,7 @@ def _tsvector_search(
         FROM memory_chunks mc
         JOIN sources s ON mc.source_id = s.source_id
         JOIN collections c ON s.collection_id = c.collection_id
-        WHERE c.user_id = :user_id::uuid
+        WHERE c.user_id = CAST(:user_id AS uuid)
           AND mc.is_deleted = false
           AND mc.search_vector IS NOT NULL
           AND mc.search_vector @@ to_tsquery('english', :tsquery)
@@ -164,7 +174,7 @@ def _ilike_search(
         FROM memory_chunks mc
         JOIN sources s ON mc.source_id = s.source_id
         JOIN collections c ON s.collection_id = c.collection_id
-        WHERE c.user_id = :user_id::uuid
+        WHERE c.user_id = CAST(:user_id AS uuid)
           AND mc.is_deleted = false
           AND mc.importance >= :min_importance
           AND ({conditions})
