@@ -28,7 +28,11 @@ from src.core.config import settings
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-API_BASE = "https://calendar.googleapis.com/calendar/v3"
+# content.googleapis.com is the only googleapis host that BOTH (a) TLS-verifies
+# cleanly on this network (www.googleapis.com is MITM'd) AND (b) routes
+# Calendar API paths correctly (calendar.googleapis.com returns HTML 404 here).
+# Verified empirically — see scripts/diag_calendar_routing.py
+API_BASE = "https://content.googleapis.com/calendar/v3"
 
 _credentials = None
 
@@ -58,6 +62,79 @@ def _tz() -> ZoneInfo:
     return ZoneInfo(settings.USER_TIMEZONE)
 
 
+_resolved_calendar_id = None
+
+
+def _resolve_calendar_id(token: str) -> Optional[str]:
+    """
+    Figure out which calendar to use, in priority order:
+      1. The user's personal calendar (if they shared it with the service account)
+      2. A bot-owned 'Nexus-Brain' calendar, auto-created and shared TO the user
+         (zero-setup fallback — the user gets an email invite to add it)
+    """
+    global _resolved_calendar_id
+    if _resolved_calendar_id:
+        return _resolved_calendar_id
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. Try the user's own calendar
+    probe = requests.get(
+        f"{API_BASE}/calendars/{settings.GOOGLE_CALENDAR_ID}",
+        headers=headers,
+        timeout=15,
+    )
+    if probe.status_code == 200:
+        _resolved_calendar_id = settings.GOOGLE_CALENDAR_ID
+        logger.info(f"📅 Using user's shared calendar: {_resolved_calendar_id}")
+        return _resolved_calendar_id
+
+    logger.info("📅 User calendar not shared yet — falling back to bot-owned calendar")
+
+    # 2. Look for an existing bot-owned 'Nexus-Brain' calendar
+    try:
+        cal_list = requests.get(
+            f"{API_BASE}/users/me/calendarList", headers=headers, timeout=15
+        )
+        cal_list.raise_for_status()
+        for item in cal_list.json().get("items", []):
+            if item.get("summary") == "Nexus-Brain":
+                _resolved_calendar_id = item["id"]
+                logger.info(f"📅 Using existing bot calendar: {_resolved_calendar_id}")
+                return _resolved_calendar_id
+
+        # 3. Create it and share it with the user
+        created = requests.post(
+            f"{API_BASE}/calendars",
+            headers=headers,
+            json={"summary": "Nexus-Brain", "timeZone": settings.USER_TIMEZONE},
+            timeout=15,
+        )
+        created.raise_for_status()
+        cal_id = created.json()["id"]
+
+        # Grant the user write access — Google emails them an invite link
+        acl = requests.post(
+            f"{API_BASE}/calendars/{cal_id}/acl",
+            headers=headers,
+            json={
+                "role": "writer",
+                "scope": {"type": "user", "value": settings.GOOGLE_CALENDAR_ID},
+            },
+            timeout=15,
+        )
+        if acl.status_code not in (200, 201):
+            logger.warning(f"Could not share bot calendar with user: {acl.text[:150]}")
+
+        _resolved_calendar_id = cal_id
+        logger.info(f"📅 Created bot calendar '{cal_id}' and shared with user")
+        return _resolved_calendar_id
+
+    except Exception as e:
+        logger.error(f"Bot calendar fallback failed: {e}")
+        return None
+
+
 def list_upcoming_events(days: int = 7, max_results: int = 10) -> List[Dict]:
     """
     List upcoming events from the user's calendar.
@@ -68,10 +145,14 @@ def list_upcoming_events(days: int = 7, max_results: int = 10) -> List[Dict]:
     if not token:
         return []
 
+    calendar_id = _resolve_calendar_id(token)
+    if not calendar_id:
+        return []
+
     try:
         now = datetime.now(_tz())
         response = requests.get(
-            f"{API_BASE}/calendars/{settings.GOOGLE_CALENDAR_ID}/events",
+            f"{API_BASE}/calendars/{calendar_id}/events",
             headers={"Authorization": f"Bearer {token}"},
             params={
                 "timeMin": now.isoformat(),
@@ -82,13 +163,6 @@ def list_upcoming_events(days: int = 7, max_results: int = 10) -> List[Dict]:
             },
             timeout=15,
         )
-
-        if response.status_code == 404:
-            logger.error(
-                "Calendar not found — has the calendar been shared with the "
-                "service account email? Check FEATURES.md setup steps."
-            )
-            return []
         response.raise_for_status()
 
         events = []
@@ -127,13 +201,17 @@ def create_event(
     if not token:
         return None
 
+    calendar_id = _resolve_calendar_id(token)
+    if not calendar_id:
+        return None
+
     try:
         if start_dt.tzinfo is None:
             start_dt = start_dt.replace(tzinfo=_tz())
         end_dt = start_dt + timedelta(minutes=duration_minutes)
 
         response = requests.post(
-            f"{API_BASE}/calendars/{settings.GOOGLE_CALENDAR_ID}/events",
+            f"{API_BASE}/calendars/{calendar_id}/events",
             headers={"Authorization": f"Bearer {token}"},
             json={
                 "summary": summary,
